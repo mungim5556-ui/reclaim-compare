@@ -1,2 +1,7 @@
 node_modules
 .DS_Store
+
+# 실제 해체계획서에서 옮긴 데이터는 공개 저장소에 올리지 않는다
+assets/data/plans/*
+!assets/data/plans/example.json
+scripts/make_private_plan.mjs

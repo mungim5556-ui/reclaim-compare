@@ -36,7 +36,22 @@ function derive() {
 }
 
 /* ---------------- 모델 ---------------- */
-async function loadIfc(buffer, name, area) {
+// 해체계획서 데이터(JSON) → 구조체 IFC를 만들어 그대로 읽어 들인다
+async function loadPlan(plan, name) {
+  try {
+    if (plan.schema !== "reclaim-plan/1") throw new Error('schema가 "reclaim-plan/1"이 아닙니다');
+    const { planToIfc } = await import("./plan.js");
+    const b = plan.building || {};
+    if (rates.wasteUnits[b.wasteUnit]) state.usage = b.wasteUnit;
+    if (plan.rebar_kg_per_m3?.value) state.p.rebar_kg_per_m3 = plan.rebar_kg_per_m3.value;
+    await loadIfc(new TextEncoder().encode(planToIfc(plan)).buffer, `${name} → 자동 생성 구조체 모델`, b.demolition_area_m2 || b.area_m2, plan);
+  } catch (e) {
+    state.error = `계획서 데이터를 읽지 못했습니다: ${e.message}`; render();
+  }
+}
+
+async function loadIfc(buffer, name, area, plan = null) {
+  state.plan = plan;
   state.busy = "IFC를 읽는 중입니다…"; state.error = ""; render();
   try {
     const { parseIfc } = await import("./ifc.js");
@@ -59,6 +74,11 @@ function modelTab(d) {
           <label class="btn btn-primary">IFC 파일 고르기<input type="file" id="file" accept=".ifc" hidden></label>
           <button class="btn btn-outline" data-act="sample">예시 모델 불러오기</button>
           <button class="btn btn-outline" data-act="area">IFC 없이 면적만으로 계산</button>
+        </div>
+        <p style="margin-top:8px"><strong>Revit 모델이 없으면</strong> 해체계획서의 구조도면을 옮긴 데이터(JSON)로 구조체 모델을 자동 생성합니다.</p>
+        <div class="row no-print">
+          <label class="btn btn-outline">계획서 데이터(JSON) 고르기<input type="file" id="planfile" accept=".json" hidden></label>
+          <button class="btn btn-outline" data-act="plan-sample">계획서 예시 (가상 건물)</button>
         </div>
         ${state.busy ? `<p class="badge badge-info">${esc(state.busy)}</p>` : ""}
         ${state.error ? `<p class="badge badge-danger">${esc(state.error)}</p>` : ""}
@@ -111,6 +131,7 @@ function modelTab(d) {
       <div class="card kpi"><div class="v">${num(STREAMS.filter((s) => SEPARATED.has(s)).reduce((s, k) => s + q.t[k], 0), 1)} t</div><div class="l">분별 대상 물량</div></div>
     </section>
     ${off.length ? `<div class="disclaimer"><div><strong>원단위 검산:</strong> ${off.map((c) => `${STREAM_LABEL[c.stream]} ${num(c.ratio * 100)}%`).join(", ")} — 모델 물량이 표준품셈 원단위와 2배 이상 차이 납니다. 모델에 해당 자재가 빠졌거나 분류가 틀렸을 수 있습니다.${state.supplement ? " 목재·합성수지·혼합폐기물의 부족분은 원단위로 채웠습니다." : ""}</div></div>` : ""}
+    ${planCard(q)}
     ${state.source === "ifc" ? `<section class="card"><h2>3D 모델</h2>${viewerBox()}</section>` : ""}
     <section class="card"><h2>성상별 물량</h2>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>성상</th><th class="r">${state.source === "ifc" ? "모델 (t)" : "원단위 (t)"}</th><th class="r">보충 (t)</th><th class="r">합계 (t)</th><th class="r">t/㎡</th><th class="r">표준품셈 원단위</th><th></th></tr></thead>
@@ -118,6 +139,26 @@ function modelTab(d) {
       ${q.rebarFromConcrete ? `<p class="caption muted" style="margin-top:8px">철근은 모델에 없어 콘크리트 1㎥당 ${num(state.p.rebar_kg_per_m3)}kg으로 추정해 고철 수익에 넣습니다 (약 ${num((q.concrete_m3 * state.p.rebar_kg_per_m3) / 1000, 1)} t).</p>` : ""}
     </section>
     ${groups}`;
+}
+
+// 계획서에서 만든 모델이면 계획서 내용과 검산 결과를 보여준다
+function planCard(q) {
+  const plan = state.plan;
+  if (!plan || state.source !== "ifc") return "";
+  const b = plan.building, d = plan.demolition || {}, model = (q.raw || q).t.concrete, want = plan.check?.waste_concrete_t;
+  const assumed = Object.entries(plan.sections).filter(([, s]) => s.assumed).map(([k]) => k);
+  return `<section class="card"><h2>해체계획서에서 읽은 정보</h2>
+    <div class="table-wrap"><table class="tbl"><tbody>
+      <tr><th>건물</th><td>${esc(b.name)} · ${esc(b.usage)} · ${esc(b.structure)} · ${b.built}년 · 지하 ${b.floors_below} / 지상 ${b.floors_above}층</td></tr>
+      <tr><th>면적</th><td>연면적 ${num(b.area_m2, 1)}㎡ · 해체 연면적 ${num(b.demolition_area_m2, 2)}㎡</td></tr>
+      <tr><th>해체</th><td>${esc(d.scope || "–")} · ${esc(d.method || "–")}${d.period ? ` · ${d.period.join(" ~ ")}` : ""}</td></tr>
+      <tr><th>재료</th><td>콘크리트 ${plan.materials.concrete_fck_MPa}MPa · 철근 ${plan.materials.rebar_fy_MPa}MPa · 철근량 ${num(plan.rebar_kg_per_m3?.value || 0)}kg/㎥ (${esc(plan.rebar_kg_per_m3?.note || "")})</td></tr>
+      <tr><th>유해물질</th><td>석면 ${plan.hazards?.asbestos ? "검출" : "불검출"}</td></tr>
+      <tr><th>부재</th><td class="mono">${Object.entries(plan.sections).map(([k, s]) => `${k} ${s.t ? "T" + s.t : s.b + "×" + s.h}`).join(" · ")}</td></tr>
+    </tbody></table></div>
+    ${want ? `<p style="margin-top:12px"><strong>검산:</strong> 생성한 모델의 콘크리트 ${num(model)}t ÷ 계획서 폐콘크리트 약 ${num(want)}t = <strong>${num((model / want) * 100)}%</strong>. 차이는 구조도면에 없는 조적벽·계단·외벽 마감으로 보입니다.</p>` : ""}
+    <p class="caption muted" style="margin-top:8px">구조체(기둥·보·벽·슬래브)와 바닥 마감 몰탈만 들어 있습니다. 내장재·창호·설비는 계획서에 없어 원단위로 보충합니다.${assumed.length ? ` 치수를 가정한 부재: ${assumed.join(", ")}.` : ""} ${esc(plan.source?.note || "")}</p>
+  </section>`;
 }
 
 function viewerBox() {
@@ -292,6 +333,7 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.color) { state.colorMode = t.dataset.color; return render(); }
   const act = t.dataset.act, d = derive();
   if (act === "sample") return loadIfc(await (await fetch("assets/data/sample.ifc")).arrayBuffer(), "sample.ifc (예시 5층 공동주택)", 2400);
+  if (act === "plan-sample") return loadPlan(await json("plans/example.json"), "계획서 예시");
   if (act === "area") { Object.assign(state, { source: "area", model: null, elements: [], error: "" }); sim = null; return render(); }
   if (act === "reset") { state.p = { ...defaults }; sim = null; save(); return render(); }
   if (act === "csv") return download("reclaim_elements.csv", "﻿" + toCsv(elementResults(d.classified, state.p)), "text/csv");
@@ -302,6 +344,10 @@ document.addEventListener("click", async (e) => {
 document.addEventListener("change", async (e) => {
   const t = e.target;
   if (t.id === "file" && t.files[0]) return loadIfc(await t.files[0].arrayBuffer(), t.files[0].name);
+  if (t.id === "planfile" && t.files[0]) {
+    try { return loadPlan(JSON.parse(await t.files[0].text()), t.files[0].name); }
+    catch (e) { state.error = `JSON을 읽지 못했습니다: ${e.message}`; return render(); }
+  }
   if (t.dataset.p) { const v = Number(t.value); if (Number.isFinite(v)) state.p[t.dataset.p] = v; }
   else if (t.dataset.set === "supplement") state.supplement = t.checked;
   else if (t.dataset.set === "usage") state.usage = t.value;
