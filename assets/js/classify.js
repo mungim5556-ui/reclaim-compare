@@ -105,16 +105,18 @@ export function checkAgainstUnits(q, usage, rates) {
 }
 
 // 부재별 결과 (전면 분별 시나리오 기준) — CSV와 Revit 되쓰기에 쓴다
-export function elementResults(classified, p) {
+// mixedFee: 건물 전체로 판정한 분별 후 혼합건설폐기물 단가 (scenario.js의 mixedWaste().fee)
+export function elementResults(classified, p, mixedFee = p.fee_mixed_selective) {
+  const cost = (net) => Math.max(0, -net), gain = (net) => Math.max(0, net);
   const fee = (s) => s === "concrete" ? p.fee_concrete_selective
-    : s === "wood" ? p.rec_sel * p.fee_wood + (1 - p.rec_sel) * p.fee_mixed_selective
-    : s === "resin" ? p.rec_sel * p.fee_resin + (1 - p.rec_sel) * p.fee_mixed_selective
-    : s === "glass" || s === "board" || s === "mixed" ? p.fee_mixed_selective : 0;
+    : s === "wood" ? p.rec_sel * cost(p.net_wood) + (1 - p.rec_sel) * mixedFee
+    : s === "resin" ? p.rec_sel * cost(p.net_resin) + (1 - p.rec_sel) * mixedFee
+    : s === "glass" || s === "board" || s === "mixed" ? mixedFee : 0;
   const price = (s) => s === "metal" ? p.rec_scrap_sel * p.price_scrap
     : s === "copper" ? p.rec_nonferrous_sel * p.price_copper
     : s === "aluminum" ? p.rec_nonferrous_sel * p.price_aluminum
-    : s === "wood" ? p.rec_sel * p.price_wood
-    : s === "resin" ? p.rec_sel * p.price_resin : 0;
+    : s === "wood" ? p.rec_sel * gain(p.net_wood)
+    : s === "resin" ? p.rec_sel * gain(p.net_resin) : 0;
   return classified.map((el) => ({
     globalId: el.globalId, tag: el.tag, category: el.category, floor: el.floor, stream: el.stream,
     method: SEPARATED.has(el.stream) ? "분별" : "압쇄",

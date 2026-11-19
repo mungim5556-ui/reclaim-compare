@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { paperMode, compare, costScenario, paramValues, quantitiesFromArea } from "../assets/js/scenario.js";
+import { paperMode, compare, costScenario, mixedWaste, paramValues, quantitiesFromArea, schedule, excavators, crews } from "../assets/js/scenario.js";
 import { breakEven, simulate, tornado, triangular, variables, mulberry32 } from "../assets/js/sensitivity.js";
 
 const load = (f) => JSON.parse(readFileSync(new URL(`../assets/data/${f}`, import.meta.url)));
@@ -23,10 +23,27 @@ test("논문 사례: 재활용 수익이 0이면 분별이 28,699천원 더 비�
   assert.equal(paperMode(c).delta, 28699);
 });
 
-test("품 항목 합계가 논문 표 3·4 합계와 같다", () => {
-  const sum = (m, i) => +rates.laborItems.reduce((s, x) => s + x[m][i], 0).toFixed(3);
-  assert.deepEqual([sum("crush", 0), sum("crush", 1), sum("selective", 0), sum("selective", 1)], [0.375, 1.015, 0.465, 1.04]);
-  assert.deepEqual([p.crush_carpenter, p.crush_laborer, p.sel_carpenter, p.sel_laborer], [0.375, 1.015, 0.465, 1.04]);
+test("분별 추가 품 = 논문 표 3·4의 분별 − 일반 차이", () => {
+  const diff = (i) => +rates.laborItems.reduce((s, x) => s + x.selective[i] - x.crush[i], 0).toFixed(3);
+  assert.deepEqual([diff(0), diff(1)], [0.09, 0.025]);
+  assert.deepEqual([p.sel_extra_carpenter, p.sel_extra_laborer], [0.09, 0.025]);
+  // 논문 사례 규모(2,400㎡)에서 논문의 시공비 증가 67,522천원과 같다
+  const rows = costScenario({ ...q, floors: 5 }, p, "selective").rows.filter((r) => r.item.startsWith("분별 추가"));
+  assert.equal(Math.round(rows.reduce((a, r) => a + r.qty, 0)), 276);
+  assert.ok(Math.abs(rows.reduce((a, r) => a + r.amount, 0) / 1000 - 67522) < 1);
+});
+
+test("작업조: 계획서 규모에서 하루 6~10인 (굴착기 2대면 더 많다), 굴착기 대수는 면적에 따라", () => {
+  for (const [area, floors] of [[965.04, 4], [4514.84, 4], [102.3, 2], [126.18, 2]]) {
+    const s = costScenario({ ...quantitiesFromArea(area, "비주거 RC", rates), floors }, p, "crush");
+    const perDay = s.rows.filter((r) => r.group === "인건비").reduce((a, r) => a + r.qty, 0) / s.days;
+    assert.ok(perDay >= 6 && perDay <= 10, `${area}㎡ 하루 ${perDay.toFixed(1)}인`);
+    if (area === 126.18) assert.ok(Math.abs(perDay - 7.2) <= 1); // 인원표가 있는 계획서 1건 (관리자·안전요원 제외)
+    assert.ok(!s.rows.some((r) => r.item.startsWith("분별 추가")));
+  }
+  assert.equal(excavators({ area_m2: 965.04 }, p), 1);
+  assert.equal(excavators({ area_m2: 4514.84 }, p), 2);
+  assert.equal(crews({ area_m2: 4514.84 }, p).standing, 5);
 });
 
 test("총액 = 내역 행의 합, 구조체 비용은 두 안이 같다", () => {
@@ -45,9 +62,9 @@ test("혼합폐기물 처리비가 오르면 분별 쪽으로 기운다", () => 
 });
 
 test("손익분기: 찾은 값에서 Δ ≈ 0", () => {
-  const x = breakEven(q, p, "price_resin", 0, 5e6);
+  const x = breakEven(q, p, "net_resin", -5e5, 5e6);
   assert.ok(x != null);
-  assert.ok(Math.abs(compare(q, { ...p, price_resin: x }).delta) < 1);
+  assert.ok(Math.abs(compare(q, { ...p, net_resin: x }).delta) < 1);
   assert.equal(breakEven(q, p, "hours_per_day", 1, 24), null); // 두 안에 공통이라 부호가 바뀌지 않는다
 });
 
@@ -70,4 +87,57 @@ test("철근 추정: IFC 물량이면 콘크리트 부피에서 고철 수익이
   const ifcQ = { area_m2: 100, concrete_m3: 50, rebarFromConcrete: true, t: { concrete: 120 } };
   const row = costScenario(ifcQ, p, "crush").rows.find((r) => r.item === "고철");
   assert.ok(Math.abs(row.qty - 50 * 0.1 * 0.9) < 1e-9);
+});
+
+test("공기 규칙: 해체계획서 4건의 공정표와 비교", () => {
+  // [연면적, 지상 층수, 계획서 구조체 일수, 계획서 전체 작업일, 전체 허용 오차]
+  const plans = [[965.04, 4, 11, 15, 0.15], [4514.84, 4, 34, 47, 0.15], [102.3, 2, 6, 10, 0.15], [126.18, 2, 13, 15, 0.45]];
+  for (const [area, floors, structure, total, tol] of plans) {
+    const s = schedule({ area_m2: area, floors }, p, "crush");
+    assert.ok(Math.abs(s.total - total) / total <= tol, `${area}㎡: ${s.total.toFixed(1)}일 vs 계획서 ${total}일`);
+    if (tol < 0.2) assert.ok(Math.abs(s.structure - structure) <= 2, `${area}㎡ 구조체 ${s.structure.toFixed(1)} vs ${structure}`);
+    assert.equal(s.selective, 0);
+  }
+});
+
+test("공기 규칙: 분별안은 추가 인원만큼만 늘어난다", () => {
+  const q4 = { ...q, floors: 5 }, c = schedule(q4, p, "crush"), s = schedule(q4, p, "selective");
+  const extra = 2400 * (0.09 + 0.025) / p.crew_size;
+  assert.ok(Math.abs(s.total - c.total - extra) < 1e-9 && Math.abs(extra - 13.8) < 0.01);
+  assert.ok(Math.abs(compare(q4, p).crush.days - c.total) < 1e-9);
+});
+
+test("분리 목재·수지는 순단가 하나: +면 매각수익, −면 처리비 (둘이 함께 들어가지 않는다)", () => {
+  const qq = { ...q, floors: 5 };
+  for (const [net, group] of [[-230000, "처리비"], [150000, "매각수익"]]) {
+    const s = costScenario(qq, { ...p, net_resin: net }, "selective");
+    const rows = s.rows.filter((r) => r.item.endsWith("폐합성수지"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].group, group);
+    assert.ok(Math.abs(Math.abs(rows[0].amount) - Math.abs(net) * qq.t.resin * p.rec_sel) < 1);
+  }
+  assert.ok(!costScenario(qq, p, "crush").rows.some((r) => r.item.endsWith("폐합성수지")));
+});
+
+test("분별 후 혼합폐기물 단가는 가연물 5% 조건과 주성상으로 정한다", () => {
+  const t = { concrete: 0, metal: 0, copper: 0, aluminum: 0, glass: 0, board: 0, mixed: 100, wood: 10, resin: 10 };
+  const m = (sep, extra = {}) => mixedWaste({ ...t, ...extra }, sep, p, "selective");
+  // 분리율 0.8: 남은 가연물 4t / 104t = 3.8% → 낮은 단가
+  assert.equal(m(0.8).fee, p.fee_mixed_selective);
+  assert.ok(Math.abs(m(0.8).share - 4 / 104) < 1e-9);
+  // 분리율 0.5: 10t / 110t = 9.1% → 한도 초과, 압쇄와 같은 단가
+  assert.equal(m(0.5).fee, p.fee_mixed_crush);
+  assert.equal(m(0.5).rule, "가연물 한도 초과");
+  // 보드가 주성상이면 보드 단가, 유리가 주성상이면 유리·타일 단가
+  assert.equal(m(0.8, { board: 200 }).fee, p.fee_board_mixed);
+  assert.equal(m(0.8, { glass: 200 }).fee, p.fee_mixed_crush);
+  // 압쇄는 늘 압쇄 단가
+  assert.equal(mixedWaste(t, 0, p, "crush").fee, p.fee_mixed_crush);
+});
+
+test("분리율이 낮아 가연물 한도를 넘으면 분별의 처리비 이득이 사라진다", () => {
+  const qq = { ...q, floors: 5 };
+  const hi = costScenario(qq, { ...p, rec_sel: 1 }, "selective"), lo = costScenario(qq, { ...p, rec_sel: 0.5 }, "selective");
+  assert.equal(hi.mixed.fee, p.fee_mixed_selective);
+  assert.equal(lo.mixed.fee, p.fee_mixed_crush);
 });
