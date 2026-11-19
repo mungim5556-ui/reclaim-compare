@@ -88,7 +88,7 @@ test("삼각분포는 범위 안, 토네이도는 영향 큰 순", () => {
 test("철근 추정: IFC 물량이면 콘크리트 부피에서 고철 수익이 나온다", () => {
   const ifcQ = { area_m2: 100, concrete_m3: 50, rebarFromConcrete: true, t: { concrete: 120 } };
   const row = costScenario(ifcQ, p, "crush").rows.find((r) => r.item === "고철");
-  assert.ok(Math.abs(row.qty - 50 * 0.1 * 0.9) < 1e-9);
+  assert.ok(Math.abs(row.qty - 50 * 0.1 * p.rec_scrap_crush) < 1e-9);
 });
 
 test("공기 규칙: 해체계획서 4건의 공정표와 비교", () => {
