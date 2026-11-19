@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { paperMode, compare, costScenario, mixedWaste, paramValues, quantitiesFromArea, schedule, excavators, crews } from "../assets/js/scenario.js";
+import { paperMode, compare, costScenario, mixedWaste, paramValues, quantitiesFromArea, schedule, excavators, crews, selExtra } from "../assets/js/scenario.js";
 import { breakEven, simulate, tornado, triangular, variables, mulberry32 } from "../assets/js/sensitivity.js";
 
 const load = (f) => JSON.parse(readFileSync(new URL(`../assets/data/${f}`, import.meta.url)));
@@ -33,17 +33,19 @@ test("분별 추가 품 = 논문 표 3·4의 분별 − 일반 차이", () => {
   assert.ok(Math.abs(rows.reduce((a, r) => a + r.amount, 0) / 1000 - 67522) < 1);
 });
 
-test("작업조: 계획서 규모에서 하루 6~10인 (굴착기 2대면 더 많다), 굴착기 대수는 면적에 따라", () => {
-  for (const [area, floors] of [[965.04, 4], [4514.84, 4], [102.3, 2], [126.18, 2]]) {
-    const s = costScenario({ ...quantitiesFromArea(area, "비주거 RC", rates), floors }, p, "crush");
+test("작업조: 계획서 규모에서 하루 6~10인, 굴착기 대수는 넉넉한 대지에서만 면적에 따라", () => {
+  // 4,515㎡ 계획서는 학교 부지라 넉넉함, 나머지는 보통
+  for (const [area, floors, site] of [[965.04, 4, "normal"], [4514.84, 4, "wide"], [102.3, 2, "normal"], [126.18, 2, "normal"]]) {
+    const s = costScenario({ ...quantitiesFromArea(area, "비주거 RC", rates), floors, site }, p, "crush");
     const perDay = s.rows.filter((r) => r.group === "인건비").reduce((a, r) => a + r.qty, 0) / s.days;
     assert.ok(perDay >= 6 && perDay <= 10, `${area}㎡ 하루 ${perDay.toFixed(1)}인`);
     if (area === 126.18) assert.ok(Math.abs(perDay - 7.2) <= 1); // 인원표가 있는 계획서 1건 (관리자·안전요원 제외)
     assert.ok(!s.rows.some((r) => r.item.startsWith("분별 추가")));
   }
-  assert.equal(excavators({ area_m2: 965.04 }, p), 1);
-  assert.equal(excavators({ area_m2: 4514.84 }, p), 2);
-  assert.equal(crews({ area_m2: 4514.84 }, p).standing, 5);
+  assert.equal(excavators({ area_m2: 965.04, site: "wide" }, p), 1);
+  assert.equal(excavators({ area_m2: 4514.84, site: "wide" }, p), 2);
+  assert.equal(crews({ area_m2: 4514.84, site: "wide" }, p).standing, 5);
+  for (const site of ["normal", "tight", "restricted", undefined]) assert.equal(excavators({ area_m2: 4514.84, site }, p), 1);
 });
 
 test("총액 = 내역 행의 합, 구조체 비용은 두 안이 같다", () => {
@@ -140,4 +142,35 @@ test("분리율이 낮아 가연물 한도를 넘으면 분별의 처리비 이�
   const hi = costScenario(qq, { ...p, rec_sel: 1 }, "selective"), lo = costScenario(qq, { ...p, rec_sel: 0.5 }, "selective");
   assert.equal(hi.mixed.fee, p.fee_mixed_selective);
   assert.equal(lo.mixed.fee, p.fee_mixed_crush);
+});
+
+test("대지 협소·진입 제한: 소형 장비로 장비 시간이 늘고 크레인이 붙으며 구조체 공기가 길어진다", () => {
+  const base = { ...q, floors: 5 };
+  for (const site of ["tight", "restricted"]) {
+    const n = costScenario({ ...base, site: "normal" }, p, "crush"), t = costScenario({ ...base, site }, p, "crush");
+    const h = (s) => s.rows.find((r) => r.unit === "h").qty;
+    assert.ok(Math.abs(h(t) / h(n) - p.crush_m3_per_day / p.crush_m3_per_day_small) < 1e-9);
+    const crane = t.rows.find((r) => r.item.startsWith("이동식 크레인"));
+    assert.ok(crane && Math.abs(crane.qty - t.schedule.structure) < 1e-9);
+    assert.ok(!n.rows.some((r) => r.item.startsWith("이동식 크레인")));
+    assert.ok(t.schedule.structure > n.schedule.structure && t.equipment > n.equipment);
+  }
+  // 두 안에 똑같이 들어가므로 대지 조건만으로는 Δ가 거의 변하지 않는다 (간접비·상시 인원 일수만 같이 늘어난다)
+  assert.equal(compare({ ...base, site: "tight" }, p).deltaDays, compare({ ...base, site: "normal" }, p).deltaDays);
+});
+
+test("분별 추가 품 작업량 방식: 보드·타일·창틀 면적 ÷ 작업량, 공기도 같은 인원으로 늘어난다", () => {
+  const qq = { ...q, floors: 5, labor: "quantity" }, A = qq.area_m2;
+  const x = selExtra(qq, p);
+  const expected = A * p.int_board_ratio / p.int_board_m2_per_day + A * p.int_tile_ratio / p.int_tile_m2_per_day + A * p.window_ratio * p.window_frame_pd_per_m2;
+  assert.equal(x.method, "quantity");
+  assert.ok(Math.abs(x.persons - expected) < 1e-9);
+  const s = costScenario(qq, p, "selective");
+  const rows = s.rows.filter((r) => r.item.startsWith("분별 추가"));
+  assert.equal(rows.length, 3);
+  assert.ok(Math.abs(rows.reduce((a, r) => a + r.qty, 0) - expected) < 1e-9);
+  assert.ok(Math.abs(s.schedule.selective - expected / p.crew_size) < 1e-9);
+  // 기본(논문 방식)은 그대로
+  assert.equal(selExtra({ ...q }, p).method, "paper");
+  assert.ok(!costScenario(qq, p, "crush").rows.some((r) => r.item.startsWith("분별 추가")));
 });

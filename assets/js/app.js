@@ -1,5 +1,5 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { compare, paramValues, quantitiesFromArea, paperMode, STREAMS, STREAM_LABEL, SEPARATED } from "./scenario.js";
+import { compare, paramValues, quantitiesFromArea, paperMode, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, smallSite, selExtra } from "./scenario.js";
 import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
 import { classify, quantitiesFromElements, supplement, checkAgainstUnits, elementResults, toCsv, groupKey, CATEGORY_LABEL } from "./classify.js";
 import { stackedBars, tornadoChart, histChart, legend, mil, num } from "./charts.js";
@@ -18,11 +18,12 @@ const saved = (() => { try { return JSON.parse(localStorage.getItem("rc.state"))
 const state = {
   tab: "model", source: null, fileName: "", model: null, elements: [], overrides: {},
   area: saved.area || 2400, floors: saved.floors || 5, usage: saved.usage || "공동주택", supplement: true,
+  site: saved.site in SITES ? saved.site : "normal", labor: saved.labor in LABOR_METHODS ? saved.labor : "paper",
   // 저장된 단가 중 지금도 쓰는 키만 받는다 (없어진 변수는 버린다)
   p: { ...defaults, ...Object.fromEntries(Object.entries(saved.p || {}).filter(([k]) => k in defaults)) }, seed: 1, colorMode: "stream", busy: "", error: "",
 };
 let viewer = null, sim = null;
-const save = () => { try { localStorage.setItem("rc.state", JSON.stringify({ area: state.area, floors: state.floors, usage: state.usage, p: state.p })); } catch { /* 저장 불가여도 계산은 된다 */ } };
+const save = () => { try { localStorage.setItem("rc.state", JSON.stringify({ area: state.area, floors: state.floors, usage: state.usage, site: state.site, labor: state.labor, p: state.p })); } catch { /* 저장 불가여도 계산은 된다 */ } };
 
 function derive() {
   if (!state.source) return null;
@@ -33,7 +34,7 @@ function derive() {
     q = state.supplement ? supplement(raw, state.usage, rates) : { ...raw, added: {} };
     q.raw = raw;
   } else q = { ...quantitiesFromArea(state.area, state.usage, rates), added: {} };
-  q.floors = state.floors;
+  q.floors = state.floors; q.site = state.site; q.labor = state.labor;
   return { classified, q, cmp: compare(q, state.p) };
 }
 
@@ -91,8 +92,11 @@ function modelTab(d) {
         <div class="field"><label>연면적 (㎡)</label><input class="input" type="number" min="1" data-set="area" value="${state.area}"></div>
         <div class="field"><label>지상 층수 (공기 계산용)</label><input class="input" type="number" min="1" step="1" data-set="floors" value="${state.floors}"></div>
         <div class="field"><label>용도·구조 (원단위 기준)</label><select class="select" data-set="usage">${Object.keys(rates.wasteUnits).map((u) => `<option ${u === state.usage ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+        <div class="field"><label>대지 조건 (장비 구성)</label><select class="select" data-set="site">${Object.entries(SITES).map(([k, v]) => `<option value="${k}" ${k === state.site ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+        <div class="field"><label>분별 추가 품 계산</label><select class="select" data-set="labor">${Object.entries(LABOR_METHODS).map(([k, v]) => `<option value="${k}" ${k === state.labor ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         ${state.source === "ifc" ? `<div class="field"><label>모델에 없는 내장재</label><label class="row"><input type="checkbox" data-set="supplement" ${state.supplement ? "checked" : ""}> 원단위로 보충한다</label></div>` : ""}
       </div>
+      <p class="caption muted" style="margin-top:8px">대지: 넉넉함이면 굴착기를 연면적 ${num(state.p.area_per_excavator)}㎡당 1대씩 늘리고, 보통은 1대, 협소·도심과 진입 제한은 소형 장비(${num(state.p.crush_m3_per_day_small, 1)}㎥/일)로 탑재 해체하며 크레인 1대가 붙습니다. 분별 추가 품의 작업량 방식은 보드·타일·창틀만 세고 선별·반출 품은 자료가 없어 빠져 있으므로, 논문 방식보다 낮게 나오는 하한값으로 보세요.</p>
       ${state.source === "ifc" ? `<p class="caption muted" style="margin-top:8px">연면적과 층수는 모델에서 읽어 넣어 두었습니다 (층수에는 지하·옥탑이 섞일 수 있습니다). 실제 값과 다르면 고치세요.</p>` : ""}
     </section>`;
   if (!d) return input;
@@ -264,13 +268,13 @@ function compareTab(d) {
       <div class="table-wrap"><table class="tbl"><thead><tr><th>공종</th><th>일수 계산식</th><th class="r">작업조 (인/일)</th><th class="r">압쇄 일수</th><th class="r">압쇄 인원</th><th class="r">분별 일수</th><th class="r">분별 인원</th></tr></thead><tbody>
         ${[["setup", "가설 설치 (비계·방진막)", `${num(p.sched_setup_base, 1)} + 연면적 ÷ 1,000 × ${num(p.sched_setup_per_1000m2, 1)}`],
            ["interior", "내부 철거", `연면적 ÷ 1,000 × ${num(p.sched_interior_per_1000m2, 1)} (최소 ${num(p.sched_interior_min, 1)}일)`],
-           ["structure", "구조체 해체", `${num(p.sched_struct_base, 1)} + ${num(p.sched_struct_per_floor, 1)} × ${num(q.floors)}층 + 연면적 ÷ ${num(p.sched_struct_m2_per_day)}`],
+           ["structure", "구조체 해체", `${num(p.sched_struct_base, 1)} + ${num(p.sched_struct_per_floor, 1)} × ${num(q.floors)}층 + 연면적 ÷ ${smallSite(q) ? `(${num(p.sched_struct_m2_per_day)} × 소형 장비 ${num(p.crush_m3_per_day_small, 1)}/${num(p.crush_m3_per_day, 1)})` : num(p.sched_struct_m2_per_day)}`],
            ["finish", "마무리 (정리·비계 해체)", `${num(p.sched_finish_base, 1)} + 연면적 ÷ 1,000 × ${num(p.sched_finish_per_1000m2, 1)}`]]
           .map(([k, label, f]) => `<tr><td>${label}</td><td class="muted">${f}</td><td class="r">${num(crush.crews[k])}</td><td class="r">${num(crush.schedule[k], 1)}</td><td class="r">${num(crush.crews[k] * crush.schedule[k])}</td><td class="r">${num(selective.schedule[k], 1)}</td><td class="r">${num(selective.crews[k] * selective.schedule[k])}</td></tr>`).join("")}
-        <tr><td>분별 추가 작업</td><td class="muted">연면적 × (목공 ${num(p.sel_extra_carpenter, 3)} + 보통인부 ${num(p.sel_extra_laborer, 3)}인/㎡) ÷ 작업조 ${num(p.crew_size)}인/일</td><td class="r">${num(p.crew_size)}</td><td class="r">–</td><td class="r">–</td><td class="r">${num(selective.schedule.selective, 1)}</td><td class="r">${num(q.area_m2 * (p.sel_extra_carpenter + p.sel_extra_laborer))}</td></tr>
+        <tr><td>분별 추가 작업</td><td class="muted">${q.labor === "quantity" ? `연면적 × (보드 ${num(p.int_board_ratio, 2)} ÷ ${num(p.int_board_m2_per_day)}㎡ + 타일 ${num(p.int_tile_ratio, 2)} ÷ ${num(p.int_tile_m2_per_day)}㎡ + 창호 ${num(p.window_ratio, 2)} × ${num(p.window_frame_pd_per_m2, 4)}인)` : `연면적 × (목공 ${num(p.sel_extra_carpenter, 3)} + 보통인부 ${num(p.sel_extra_laborer, 3)}인/㎡)`} ÷ 작업조 ${num(p.crew_size)}인/일</td><td class="r">${num(p.crew_size)}</td><td class="r">–</td><td class="r">–</td><td class="r">${num(selective.schedule.selective, 1)}</td><td class="r">${num(selExtra(q, p).persons)}</td></tr>
         <tr><td>상시 인원 (신호수·유도자·살수공)</td><td class="muted">전체 공기 동안 · 굴착기 ${num(crush.crews.excavators)}대</td><td class="r">${num(crush.crews.standing)}</td><td class="r">${num(crush.days, 1)}</td><td class="r">${num(crush.crews.standing * crush.days)}</td><td class="r">${num(selective.days, 1)}</td><td class="r">${num(selective.crews.standing * selective.days)}</td></tr>
       </tbody><tfoot><tr><td>공기 (작업일) · 총 인원</td><td></td><td></td><td class="r">${num(crush.days, 1)}</td><td class="r">${num(persons(crush))}</td><td class="r">${num(selective.days, 1)}</td><td class="r">${num(persons(selective))}</td></tr></tfoot></table></div>
-      <p class="caption muted" style="margin-top:8px">공기는 해체계획서 4건의 예정공정표에서 뽑은 규칙입니다 (RC 전체 해체 3건은 오차 ±15% 안, 소형 장비를 쓴 산지 현장 1건은 −38%). 인건비는 공종별 일수 × 작업조로 계산하며 작업조 인원은 대부분 가정입니다 (인원표가 있는 계획서 1건과 하루 인원이 비슷함). 분별 추가 인원은 기준 논문 표 3·4의 차이 품을 연면적에 곱한 값이고, 굴착기 운전원은 장비비에 들어 있습니다.</p>
+      <p class="caption muted" style="margin-top:8px">공기는 해체계획서 4건의 예정공정표에서 뽑은 규칙입니다 (RC 전체 해체 3건은 오차 ±15% 안, 소형 장비를 쓴 산지 현장 1건은 −38%). 인건비는 공종별 일수 × 작업조로 계산하며 작업조 인원은 대부분 가정입니다 (인원표가 있는 계획서 1건과 하루 인원이 비슷함). 분별 추가 인원은 ${q.labor === "quantity" ? "떼어 내는 자재 면적(연면적 × 면적비, 가정)을 1인 1일 작업량(석고보드 30㎡, 타일 10㎡)으로 나누고 창틀 분별 공수를 더한 값으로, 선별·반출 품은 빠져 있습니다" : "기준 논문 표 3·4의 차이 품을 연면적에 곱한 값입니다"}. 대지가 ${SITES[q.site] || "보통"}${smallSite(q) ? "이라 구조체 해체가 소형 장비 해체량만큼 길어집니다" : "입니다"}. 굴착기 운전원은 장비비에 들어 있습니다.</p>
     </section>
     <div class="grid-2">
       <section class="card"><h2>손익분기</h2>${be ? `<ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px">${be}</ul>` : `<p class="muted">범위 안에서 결과를 뒤집는 변수가 없습니다.</p>`}
@@ -292,7 +296,7 @@ const empty = () => `<section class="card"><p>먼저 <strong>모델</strong> 단
 function summary(d) {
   const { crush, selective, delta, deltaDays } = d.cmp;
   sim ||= simulate(d.q, state.p, variables(rates), { n: 5000, seed: state.seed });
-  return { source: state.source === "ifc" ? state.fileName : "area", area_m2: state.area, usage: state.usage,
+  return { source: state.source === "ifc" ? state.fileName : "area", area_m2: state.area, usage: state.usage, site: state.site, labor_method: state.labor,
     crush_total_won: Math.round(crush.total), selective_total_won: Math.round(selective.total), delta_won: Math.round(delta),
     crush_days: +crush.days.toFixed(1), selective_days: +selective.days.toFixed(1), delta_days: +deltaDays.toFixed(1),
     p_selective_cheaper: +sim.pSelective.toFixed(4), seed: state.seed, recommended: delta < 0 ? "selective" : "crush" };
@@ -369,7 +373,7 @@ document.addEventListener("change", async (e) => {
   }
   if (t.dataset.p) { const v = Number(t.value); if (Number.isFinite(v)) state.p[t.dataset.p] = v; }
   else if (t.dataset.set === "supplement") state.supplement = t.checked;
-  else if (t.dataset.set === "usage") state.usage = t.value;
+  else if (["usage", "site", "labor"].includes(t.dataset.set)) state[t.dataset.set] = t.value;
   else if (t.dataset.set) { const v = Number(t.value); if (v > 0) state[t.dataset.set] = v; }
   else if (t.dataset.override != null) { if (t.value) state.overrides[t.dataset.override] = t.value; else delete state.overrides[t.dataset.override]; }
   else return;
