@@ -50,8 +50,10 @@ export function costScenario(q, p, mode) {
   // 2. 구조체 해체 장비 (두 안에 공통) — 콘크리트 부피 ÷ 생산성으로 가동 시간을 구한다.
   //    협소·진입 제한 대지는 소형 장비(해체량이 작다)로 탑재 해체하고, 구조체 해체 기간 동안 크레인 1대가 붙는다.
   const small = smallSite(q);
-  const structDays = q.concrete_m3 / (small ? p.crush_m3_per_day_small : p.crush_m3_per_day);
-  let equipment = add("장비비", small ? "소형 굴착기+압쇄기 (탑재 해체)" : "굴착기+압쇄기", structDays * p.hours_per_day, "h", p.excavator_per_h);
+  const production = small ? p.crush_m3_per_day_small : p.crush_m3_per_day;
+  const excavatorHours = (q.concrete_m3 / production) * p.hours_per_day;
+  const excavatorRate = small ? p.excavator_per_h_small : p.excavator_per_h;
+  let equipment = add("장비비", small ? "소형 굴착기 (탑재 해체)" : "대형 굴착기 (압쇄 해체)", excavatorHours, "h", excavatorRate);
   if (small) equipment += add("장비비", "이동식 크레인 (장비 탑재·양중)", sched.structure, "일", p.crane_per_day);
 
   // 3. 폐기물 처리비 — 압쇄는 떼지 않은 내장재가 모두 혼합폐기물이 된다
@@ -77,7 +79,7 @@ export function costScenario(q, p, mode) {
   // 5. 간접비
   const indirect = add("간접비", "현장 간접비", days, "일", p.indirect_per_day);
 
-  return { mode, labor, equipment, disposal, revenue, indirect, days, schedule: sched, crews: crew, mixed: mix, total: labor + equipment + disposal + indirect - revenue, rows: rows.filter((r) => r.qty > 0) };
+  return { mode, labor, equipment, disposal, revenue, indirect, days, excavatorHours, schedule: sched, crews: crew, mixed: mix, total: labor + equipment + disposal + indirect - revenue, rows: rows.filter((r) => r.qty > 0) };
 }
 
 // 혼합건설폐기물의 양과 처리단가 (한국건설자원협회 2026 성상별 중간처리단가의 적용 조건).

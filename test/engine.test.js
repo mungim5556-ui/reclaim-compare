@@ -144,11 +144,19 @@ test("분리율이 낮아 가연물 한도를 넘으면 분별의 처리비 이�
   assert.equal(lo.mixed.fee, p.fee_mixed_crush);
 });
 
+test("비주거 RC 면적 모드: 1,000㎡의 폐금속 추정량은 17t", () => {
+  assert.equal(quantitiesFromArea(1000, "비주거 RC", rates).t.metal, 17);
+});
+
 test("대지 협소·진입 제한: 소형 장비로 장비 시간이 늘고 크레인이 붙으며 구조체 공기가 길어진다", () => {
   const base = { ...q, floors: 5 };
   for (const site of ["tight", "restricted"]) {
     const n = costScenario({ ...base, site: "normal" }, p, "crush"), t = costScenario({ ...base, site }, p, "crush");
-    const h = (s) => s.rows.find((r) => r.unit === "h").qty;
+    const excavatorRow = (s) => s.rows.find((r) => r.group === "장비비" && r.unit === "h");
+    const h = (s) => excavatorRow(s).qty;
+    assert.equal(excavatorRow(n).price, p.excavator_per_h);
+    assert.equal(excavatorRow(t).price, p.excavator_per_h_small);
+    assert.equal(t.excavatorHours, h(t));
     assert.ok(Math.abs(h(t) / h(n) - p.crush_m3_per_day / p.crush_m3_per_day_small) < 1e-9);
     const crane = t.rows.find((r) => r.item.startsWith("이동식 크레인"));
     assert.ok(crane && Math.abs(crane.qty - t.schedule.structure) < 1e-9);

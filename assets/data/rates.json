@@ -3,7 +3,7 @@
   "sources": {
     "paper": "박지선·장경필·송태협 (2023), 한국건설순환자원학회 논문집 11(3) 251-259",
     "meeting": "팀 조사 (회의록 2026-11-12)",
-    "pumsem": "국토교통부 2023 건설공사 표준품셈 (논문 표 6 인용)",
+    "pumsem": "국토교통부 2023 건설공사 표준품셈",
     "plans": "해체계획서 4건의 예정공정표 분석 (2026-11-14)",
     "cmpi2026": "한국건설자원협회 2026 건설폐기물 성상별 중간처리단가 (2026-01-01 적용, 운반비·VAT 별도)",
     "team1114": "팀 조사: 11/14 회의록 (민서: 해체계획서·2026 표준품셈 / 욱자: 허준규·김창학 2024 창틀 분별 공수 / 성민: 회수율 문헌)",
@@ -31,6 +31,7 @@
     "window_ratio": { "group": "분별 추가 품 (작업량 방식)", "label": "창호 면적 ÷ 연면적", "value": 0.15, "unit": "㎡/㎡", "source": "assumed", "assumed": true, "min": 0.1, "max": 0.25 },
     "window_frame_pd_per_m2": { "group": "분별 추가 품 (작업량 방식)", "label": "창틀 분별 공수 (알루미늄 0.0229 / PVC 0.0122)", "value": 0.0229, "unit": "인·일/㎡", "source": "team1114", "date": "2024", "min": 0.0122, "max": 0.0229, "ref": "허준규·김창학 (2024)" },
     "excavator_per_h": { "group": "구조체 해체", "label": "대형 굴착기(1.5㎥) 시간당 비용", "value": 160391, "unit": "원/h", "source": "meeting", "date": "2026-11", "min": 145000, "max": 176000 },
+    "excavator_per_h_small": { "group": "구조체 해체", "label": "소형 굴착기(0.12㎥) 시간당 비용 (잠정)", "value": 82887, "unit": "원/h", "source": "meeting", "assumed": true, "ref": "팀 조사 참고 단가. 운전원 포함으로 정리했으며 압쇄기 포함 여부는 미확인" },
     "hours_per_day": { "group": "구조체 해체", "label": "하루 작업 시간", "value": 8, "unit": "h/일", "source": "assumed", "assumed": true },
     "rebar_kg_per_m3": { "group": "구조체 해체", "label": "콘크리트 1㎥당 철근량", "value": 100, "unit": "kg/㎥", "source": "assumed", "assumed": true, "min": 70, "max": 140 },
     "fee_concrete": { "group": "처리비", "label": "건설폐재류(폐콘크리트)", "value": 49571, "unit": "원/t", "source": "cmpi2026", "date": "2026-01-01" },
@@ -320,7 +321,7 @@
     },
     "비주거 RC": {
       "concrete": 1.4028,
-      "metal": 0.073,
+      "metal": 0.017,
       "wood": 0.0638,
       "resin": 0.0215,
       "mixed": 0.1348
