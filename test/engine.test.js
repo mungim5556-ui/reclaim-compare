@@ -28,7 +28,8 @@ test("분별 추가 품 = 논문 표 3·4의 분별 − 일반 차이", () => {
   assert.deepEqual([diff(0), diff(1)], [0.09, 0.025]);
   assert.deepEqual([p.sel_extra_carpenter, p.sel_extra_laborer], [0.09, 0.025]);
   // 논문 사례 규모(2,400㎡)에서 논문의 시공비 증가 67,522천원과 같다
-  const rows = costScenario({ ...q, floors: 5 }, p, "selective").rows.filter((r) => r.item.startsWith("분별 추가"));
+  const paperWages = { ...p, wage_carpenter: paper.wage.carpenter, wage_laborer: paper.wage.laborer };
+  const rows = costScenario({ ...q, floors: 5 }, paperWages, "selective").rows.filter((r) => r.item.startsWith("분별 추가"));
   assert.equal(Math.round(rows.reduce((a, r) => a + r.qty, 0)), 276);
   assert.ok(Math.abs(rows.reduce((a, r) => a + r.amount, 0) / 1000 - 67522) < 1);
 });
@@ -173,16 +174,23 @@ test("비주거 RC 면적 모드: 1,000㎡의 폐금속 추정량은 73t", () =>
 
 test("대지 협소·진입 제한: 소형 장비로 장비 시간이 늘고 크레인이 붙으며 구조체 공기가 길어진다", () => {
   const base = { ...q, floors: 5 };
+  const hours = (s) => s.rows.filter((r) => r.group === "장비비" && r.unit === "h").reduce((a, r) => a + r.qty, 0);
+  const n = costScenario({ ...base, site: "normal" }, p, "crush");
+  // 소형 지상 장비: 전체 부피를 소형 장비 해체량으로
+  const small = costScenario({ ...base, equipment: "small" }, p, "crush");
+  assert.ok(Math.abs(hours(small) / hours(n) - p.crush_m3_per_day / p.crush_m3_per_day_small) < 1e-9);
   for (const site of ["tight", "restricted"]) {
-    const n = costScenario({ ...base, site: "normal" }, p, "crush"), t = costScenario({ ...base, site }, p, "crush");
-    const excavatorRow = (s) => s.rows.find((r) => r.group === "장비비" && r.unit === "h");
-    const h = (s) => excavatorRow(s).qty;
-    assert.equal(excavatorRow(n).price, p.excavator_per_h);
-    assert.equal(excavatorRow(t).price, p.excavator_per_h);
-    assert.equal(t.excavatorHours, h(t));
-    assert.ok(Math.abs(h(t) / h(n) - p.crush_m3_per_day / p.crush_m3_per_day_small) < 1e-9);
+    const t = costScenario({ ...base, site }, p, "crush");
+    for (const r of t.rows.filter((r) => r.unit === "h")) assert.equal(r.price, p.excavator_per_h);
+    assert.ok(Math.abs(t.excavatorHours - hours(t)) < 1e-9);
+    // 탑재: 위층은 소형 장비, 지상 장비가 닿는 하부 층은 대형 장비
+    const share = p.mounted_ground_floors / base.floors, V = base.concrete_m3;
+    const expected = (V * (1 - share) / p.crush_m3_per_day_small + V * share / p.crush_m3_per_day) * p.hours_per_day;
+    assert.ok(Math.abs(hours(t) - expected) < 1e-6);
     const crane = t.rows.find((r) => r.item.startsWith("이동식 크레인"));
-    assert.ok(crane && Math.abs(crane.qty - t.schedule.structure) < 1e-9);
+    const mountedDays = V * (1 - share) / p.crush_m3_per_day_small, groundDays = V * share / p.crush_m3_per_day;
+    assert.ok(crane && Math.abs(crane.qty - t.schedule.structure * mountedDays / (mountedDays + groundDays)) < 1e-9);
+    assert.ok(crane.qty < t.schedule.structure);
     assert.ok(!n.rows.some((r) => r.item.startsWith("이동식 크레인")));
     assert.ok(t.schedule.structure > n.schedule.structure && t.equipment > n.equipment);
   }
@@ -213,4 +221,35 @@ test("대형 병렬 장비의 공기와 소형 지상 장비의 크레인 독립
   assert.ok(!ground.rows.some((row) => row.item.includes("크레인")));
   const mounted = compare({ ...wide, equipment: "mounted", craneDays: 1 }, p).crush;
   assert.equal(mounted.rows.find((row) => row.item.includes("크레인")).qty, 1);
+});
+
+test("콘크리트 견적은 해당 물량만 대체하고 별도 매각분은 공법별로 한 번 차감한다", () => {
+  const qg = { ...q, concreteCase: "good" };
+  const base = compare(qg, p);
+  const result = compare({ ...qg, cleanSel: 25, cleanPrice: 30000,
+    cableCrush: 1, cableSel: 2, cablePrice: 100000 }, p);
+  assert.equal(result.selective.revenue - base.selective.revenue, 200000);
+  assert.equal(result.crush.revenue - base.crush.revenue, 100000);
+  assert.ok(Math.abs(base.selective.disposal - result.selective.disposal
+    - q.t.concrete * 0.25 * (35290.8 - 30000)) < 0.01);
+  assert.equal(compare({ ...qg, cleanSel: 25 }, p).delta, base.delta);
+});
+
+test("목공 비율을 바꾸면 총공수는 같고 직종별 차액만 인건비에 반영된다", () => {
+  const input = { ...q, labor: "quantity", generalFinishPd: 1 };
+  const initial = costScenario(input, p, "selective");
+  const split = costScenario({ ...input, carpenterShare: 50 }, p, "selective");
+  const persons = selExtra(input, p).persons;
+  assert.equal(initial.days, split.days);
+  assert.ok(Math.abs(split.labor - initial.labor - persons / 2 * (p.wage_carpenter - p.wage_laborer)) < 0.01);
+});
+
+test("조적에는 별도 처리 단가를 적용하고 콘크리트에만 성상 가정을 적용한다", () => {
+  const input = { ...q, t: { concrete: 100, masonry: 20 } };
+  const same = compare({ ...input, concreteCase: "same" }, p);
+  const good = compare({ ...input, concreteCase: "good" }, p);
+  assert.equal(same.crush.disposal, same.selective.disposal);
+  assert.equal(good.crush.disposal, same.crush.disposal);
+  assert.equal(good.selective.rows.find(row => row.item.startsWith("폐벽돌")).amount, 20 * p.fee_concrete);
+  assert.equal(good.selective.rows.find(row => row.item === "순수 폐콘크리트").qty, 80);
 });
