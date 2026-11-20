@@ -155,7 +155,7 @@ function modelTab(d) {
           <label class="field">장비 운용 방식 <select class="select" data-set="equipment">${opts(EQUIPMENT, state.equipment)}</select></label>
           <label class="field">가설 비계 <select class="select" data-set="scaffold">${opts({ yes: "비계공 투입", no: "비계공 0명" }, state.scaffold)}</select></label>
           <label class="field">굴착기 연동 살수·신호 배치 기간 <select class="select" data-set="equipmentCrewPeriod">${opts({ structure: "구조체 작업일 (팀 기본값)", all: "전체 작업일" }, state.equipmentCrewPeriod)}</select></label>
-          ${numeric("craneDays", "탑재 해체 크레인 사용 일수")}
+          ${numeric("craneDays", "탑재 해체 크레인 사용 일수", { placeholder: "기본: 인양·하강 일수" })}
           ${numeric("parallelGain", "추가 굴착기 1대당 병렬 효율 (%)", { max: 100, placeholder: "기본 0%" })}
           ${numeric("overlap", "분별 추가 작업의 타 공정 병행률 (%)", { max: 100, placeholder: "기본 0%" })}
           ${numeric("mixedMineral", "혼합·기타 중 확인된 건설폐재류 (%)", { max: 100 })}

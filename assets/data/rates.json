@@ -27,6 +27,7 @@
     "crush_m3_per_day": {"group": "구조체 해체", "label": "굴착기+압쇄기 RC 해체량", "value": 47.5, "unit": "㎥/일", "source": "meeting", "date": "2026-11", "min": 45, "max": 50, "assumed": true},
     "crush_m3_per_day_small": {"group": "구조체 해체", "label": "소형 장비·탑재 해체 RC 해체량 (협소·진입 제한)", "value": 22.5, "unit": "㎥/일", "source": "team1114", "date": "2026-11", "min": 20, "max": 25, "assumed": true, "ref": "팀 비교 가정 20~25㎥/일. 원문 품셈의 일일 환산값으로 검증되지 않음."},
     "crane_per_day": {"group": "구조체 해체", "label": "이동식 크레인 하루 비용 (협소·진입 제한)", "value": 1000000, "unit": "원/일", "source": "assumed", "assumed": true, "min": 700000, "max": 1500000},
+    "crane_lift_days": {"group": "구조체 해체", "label": "탑재 해체 크레인 일수 (굴착기 인양 + 하강)", "value": 2, "unit": "일", "source": "assumed", "assumed": true, "min": 1, "max": 4, "ref": "크레인은 굴착기를 옥상에 올리고 내리는 날에만 붙는다고 가정. 현장 일수를 알면 모델 화면에서 직접 입력."},
     "excavator_per_h": {"group": "구조체 해체", "label": "굴착기+압쇄기 시간당 비용 (공통 추정)", "value": 160391, "unit": "원/h", "source": "meeting", "date": "2026-11", "min": 145000, "max": 176000, "assumed": true, "ref": "공유 저장소의 공통 단가 160,391원/h를 적용. 소형 전용 단가는 압쇄기 포함 여부가 확인되면 별도로 사용 가능."},
     "hours_per_day": {"group": "구조체 해체", "label": "하루 작업 시간", "value": 8, "unit": "h/일", "source": "assumed", "assumed": true},
     "rebar_kg_per_m3": {"group": "구조체 해체", "label": "콘크리트 1㎥당 철근량", "value": 100, "unit": "kg/㎥", "source": "assumed", "assumed": true, "min": 70, "max": 140},

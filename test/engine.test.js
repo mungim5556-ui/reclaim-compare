@@ -182,7 +182,7 @@ test("대지 협소·진입 제한: 소형 장비로 장비 시간이 늘고 크
     assert.equal(t.excavatorHours, h(t));
     assert.ok(Math.abs(h(t) / h(n) - p.crush_m3_per_day / p.crush_m3_per_day_small) < 1e-9);
     const crane = t.rows.find((r) => r.item.startsWith("이동식 크레인"));
-    assert.ok(crane && Math.abs(crane.qty - t.schedule.structure) < 1e-9);
+    assert.ok(crane && crane.qty === p.crane_lift_days);
     assert.ok(!n.rows.some((r) => r.item.startsWith("이동식 크레인")));
     assert.ok(t.schedule.structure > n.schedule.structure && t.equipment > n.equipment);
   }

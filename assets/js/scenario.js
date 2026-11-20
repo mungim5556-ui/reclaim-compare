@@ -65,9 +65,10 @@ export function costScenario(q, p, mode) {
   const excavatorHours = ((q.concrete_m3 || 0) / production) * p.hours_per_day;
   let equipment = add("장비비", small ? "소형 굴착기+압쇄기" : "굴착기+압쇄기", excavatorHours, "h", p.excavator_per_h);
   if (equipmentMode(q) === "mounted") {
-    const craneDays = q.craneDays ?? sched.structure;
-    equipment += add("장비비", "이동식 크레인 (장비 탑재·양중)", craneDays, "일", p.crane_per_day);
-    if (q.craneDays == null) issues.push("크레인 사용 일수가 없어 구조체 공정 전체를 적용했습니다.");
+    // 크레인은 굴착기를 옥상에 올리고 내리는 날에만 붙는다. 현장 일수를 입력하면 그 값을 쓴다.
+    const craneDays = q.craneDays ?? p.crane_lift_days;
+    equipment += add("장비비", "이동식 크레인 (굴착기 인양·하강)", craneDays, "일", p.crane_per_day);
+    if (q.craneDays == null) issues.push(`크레인 사용 일수가 없어 인양·하강 ${p.crane_lift_days}일(가정)을 적용했습니다.`);
   }
 
   const rates = separation(p);
