@@ -7,7 +7,10 @@ export const STREAMS = ["concrete", "metal", "wood", "resin", "glass", "board", 
 export const STREAM_LABEL = {
   concrete: "폐콘크리트·조적", metal: "철근·강재", wood: "폐목재", resin: "폐합성수지", glass: "폐유리",
   board: "폐보드", mixed: "혼합·기타", copper: "구리", aluminum: "알루미늄",
+  excluded: "제외 (집계 안 함)",
 };
+// 물량에 넣지 않는 부재 (IFC의 기타 객체: 가구·설비·조경 등). STREAMS에는 들어가지 않는다.
+export const EXCLUDED = "excluded";
 // 분별해체에서 따로 떼어 내는 성상 (나머지는 구조체와 함께 압쇄)
 export const SEPARATED = new Set(["wood", "resin", "glass", "board", "copper", "aluminum"]);
 

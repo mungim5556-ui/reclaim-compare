@@ -11,7 +11,7 @@ const [rates, paper] = await Promise.all([json("rates.json"), json("paper2023_ca
 const defaults = paramValues(rates);
 
 const TABS = [["model", "모델"], ["rates", "단가"], ["compare", "비교"], ["export", "내보내기"]];
-const STREAM_COLOR = { concrete: "#9c9084", metal: "#4a6fa5", wood: "#b0783c", resin: "#c05a9a", glass: "#58b8d8", board: "#d9b23a", mixed: "#6f747d", copper: "#c8642a", aluminum: "#b8c4d0" };
+const STREAM_COLOR = { concrete: "#9c9084", metal: "#4a6fa5", wood: "#b0783c", resin: "#c05a9a", glass: "#58b8d8", board: "#d9b23a", mixed: "#6f747d", copper: "#c8642a", aluminum: "#b8c4d0", excluded: "#d6d3ce" };
 const METHOD_COLOR = { 분별: "#1baf7a", 압쇄: "#9c9084" };
 
 const saved = (() => { try { return JSON.parse(localStorage.getItem("rc.state")) || {}; } catch { return {}; } })();
@@ -60,7 +60,7 @@ async function loadIfc(buffer, name, area, plan = null) {
     const { parseIfc } = await import("./ifc.js");
     const model = await parseIfc(buffer);
     Object.assign(state, { source: "ifc", model, elements: model.elements, fileName: name, overrides: {},
-      area: area || Math.round(model.size[0] * model.size[2] * model.floors),
+      area: area || Math.round(model.gross.area),
       floors: plan?.building?.floors_above || model.floors });
   } catch (e) {
     state.error = `IFC를 읽지 못했습니다: ${e.message}`;
@@ -97,7 +97,7 @@ function modelTab(d) {
         ${state.source === "ifc" ? `<div class="field"><label>모델에 없는 내장재</label><label class="row"><input type="checkbox" data-set="supplement" ${state.supplement ? "checked" : ""}> 원단위로 보충한다</label></div>` : ""}
       </div>
       <p class="caption muted" style="margin-top:8px">대지: 넉넉함이면 굴착기를 연면적 ${num(state.p.area_per_excavator)}㎡당 1대씩 늘리고, 보통은 1대, 협소·도심과 진입 제한은 소형 장비(${num(state.p.crush_m3_per_day_small, 1)}㎥/일)로 탑재 해체하며 크레인 1대가 붙습니다. 분별 추가 품의 작업량 방식은 보드·타일·창틀만 세고 선별·반출 품은 자료가 없어 빠져 있으므로, 논문 방식보다 낮게 나오는 하한값으로 보세요.</p>
-      ${state.source === "ifc" ? `<p class="caption muted" style="margin-top:8px">연면적과 층수는 모델에서 읽어 넣어 두었습니다 (층수에는 지하·옥탑이 섞일 수 있습니다). 실제 값과 다르면 고치세요.</p>` : ""}
+      ${state.source === "ifc" ? `<p class="caption muted" style="margin-top:8px">연면적과 층수는 모델에서 읽어 넣어 두었습니다. 연면적은 ${state.model?.gross?.basis === "slab" ? "바닥 슬래브 면적의 합" : "모델에 바닥 슬래브가 없어 외곽 크기 × 층수로 잡은 값(실제보다 클 수 있음)"}, 층수는 부재가 있는 층의 수입니다 (지하가 섞일 수 있습니다). 실제 값과 다르면 고치세요.${state.model?.lengthScale && state.model.lengthScale !== 1 ? ` 이 파일의 길이 단위는 ${state.model.lengthScale === 0.001 ? "mm" : `${state.model.lengthScale} m`}이며 m로 바꿔 계산했습니다.` : ""}</p>` : ""}
     </section>`;
   if (!d) return input;
 
@@ -127,7 +127,7 @@ function modelTab(d) {
       <div class="table-wrap"><table class="tbl"><thead><tr><th>부재</th><th>재료 (IFC)</th><th class="r">개수</th><th class="r">톤</th><th>성상</th></tr></thead><tbody>
       ${[...g].sort((a, b) => b[1].tons - a[1].tons).map(([k, x]) => `<tr><td>${CATEGORY_LABEL[x.el.category]}</td><td>${esc(x.el.layers.map((l) => l.name).join(" + ") || "(재료 없음)")} ${x.guessed ? '<span class="badge badge-warning">추정</span>' : ""}</td>
         <td class="r">${num(x.n)}</td><td class="r">${num(x.tons, 2)}</td>
-        <td><select class="select sm" data-override="${esc(k)}"><option value="">자동 (${x.el.parts.length > 1 && !state.overrides[k] ? "층별" : STREAM_LABEL[x.el.stream]})</option>${STREAMS.map((s) => `<option value="${s}" ${state.overrides[k] === s ? "selected" : ""}>${STREAM_LABEL[s]}</option>`).join("")}</select></td></tr>`).join("")}
+        <td><select class="select sm" data-override="${esc(k)}"><option value="">자동 (${x.el.parts.length > 1 && !state.overrides[k] ? "층별" : STREAM_LABEL[x.el.stream]})</option>${[...STREAMS, "excluded"].map((s) => `<option value="${s}" ${state.overrides[k] === s ? "selected" : ""}>${STREAM_LABEL[s]}</option>`).join("")}</select></td></tr>`).join("")}
       </tbody></table></div></section>`;
   }
 
@@ -139,6 +139,7 @@ function modelTab(d) {
       <div class="card kpi"><div class="v">${num(STREAMS.filter((s) => SEPARATED.has(s)).reduce((s, k) => s + q.t[k], 0), 1)} t</div><div class="l">분별 대상 물량</div></div>
     </section>
     ${off.length ? `<div class="disclaimer"><div><strong>원단위 검산:</strong> ${off.map((c) => `${STREAM_LABEL[c.stream]} ${num(c.ratio * 100)}%`).join(", ")} — 모델 물량이 표준품셈 원단위와 2배 이상 차이 납니다. 모델에 해당 자재가 빠졌거나 분류가 틀렸을 수 있습니다.${state.supplement ? " 목재·합성수지·혼합폐기물의 부족분은 원단위로 채웠습니다." : ""}</div></div>` : ""}
+    ${(() => { const ex = classified.filter((e) => e.stream === "excluded"); return ex.length ? `<p class="caption muted">기타 객체 ${num(ex.length)}개(가구·가전·위생기구·조경 등, 모델 값 ${num(ex.reduce((a, e) => a + e.tons, 0))} t)는 건물 부재가 아니고 부피를 믿기 어려워 물량에서 뺐습니다. 넣으려면 아래 부재 그룹 표에서 성상을 고르세요.</p>` : ""; })()}
     ${planCard(q)}
     ${state.source === "ifc" ? `<section class="card"><h2>3D 모델</h2>${viewerBox()}</section>` : ""}
     <section class="card"><h2>성상별 물량</h2>

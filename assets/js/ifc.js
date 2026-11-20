@@ -26,6 +26,24 @@ export function meshSurface(pos, index) {
   return s;
 }
 
+// IFC 길이 단위 → m 배율. web-ifc의 형상은 m로 바뀌어 나오지만, 속성 값(창·문의 OverallWidth 등)은
+// 파일 단위 그대로라 Revit 기본값(mm)이면 1,000배가 된다. units = IfcUnitAssignment.Units (GetLine(..., true)로 펼친 것)
+const PREFIX = { EXA: 1e18, PETA: 1e15, TERA: 1e12, GIGA: 1e9, MEGA: 1e6, KILO: 1e3, HECTO: 1e2, DECA: 10,
+  DECI: 0.1, CENTI: 0.01, MILLI: 1e-3, MICRO: 1e-6, NANO: 1e-9 };
+const enumOf = (x) => String(x?.value ?? x ?? "").replace(/\./g, "").toUpperCase();
+export function lengthScale(units = []) {
+  const unit = units.find((u) => enumOf(u?.UnitType) === "LENGTHUNIT");
+  return unit ? unitFactor(unit) : 1;
+}
+function unitFactor(u) {
+  if (u.ConversionFactor) {
+    // 인치·피트 등: ValueComponent × (기준 SI 단위의 배율)
+    const c = u.ConversionFactor, v = Number(c.ValueComponent?.value ?? c.ValueComponent) || 1;
+    return v * (c.UnitComponent ? unitFactor(c.UnitComponent) : 1);
+  }
+  return PREFIX[enumOf(u.Prefix)] ?? 1;
+}
+
 // IFC 종류 → 앱의 부재 분류
 const CATEGORY = {
   IFCWALL: "wall", IFCWALLSTANDARDCASE: "wall", IFCSLAB: "slab", IFCBEAM: "beam", IFCCOLUMN: "column",
@@ -50,6 +68,27 @@ function materialLayers(o, W, out = [], depth = 0) {
   return out;
 }
 
+// 창·문 면적(㎡): 속성(폭×높이)을 쓰되, 형상 겉넓이의 절반보다 터무니없이 크면(단위 오류) 형상 값을 쓴다
+export function openingArea(w, h, surface) {
+  const geo = surface / 2;
+  if (!(w && h)) return geo;
+  return geo > 0 && w * h > geo * 5 ? geo : w * h;
+}
+
+// 연면적(㎡) 추정: 바닥 슬래브(기초 슬래브 포함, 지붕·옥상 제외) 면적의 합. 슬래브가 없으면 외곽 상자 × 층수.
+// 외곽 상자 × 층수는 대지·옥탑·기준 레벨까지 세어 몇 배로 커지기 쉽다.
+// 옥상 슬래브(그 층에 벽·기둥이 없는 맨 위 슬래브)는 바닥이 아니므로 뺀다.
+export function grossArea(elements, size, floors) {
+  const vertical = new Set(elements.filter((e) => e.category === "wall" || e.category === "column").map((e) => e.floor));
+  const isSlab = (e) => e.category === "slab" || (e.category === "footing" && e.predefined === "BASESLAB");
+  let slabs = elements.filter((e) => e.category === "slab" && vertical.has(e.floor));
+  // 기초 슬래브(매트)는 1층 바닥 슬래브가 따로 없을 때만 1층 바닥으로 센다
+  if (!slabs.some((e) => e.floor === 1)) slabs.push(...elements.filter((e) => e.category === "footing" && e.predefined === "BASESLAB"));
+  if (!slabs.length) slabs = elements.filter(isSlab);
+  const area = slabs.reduce((s, e) => s + (e.area || 0), 0);
+  return area > 0 ? { area, basis: "slab" } : { area: size[0] * size[2] * floors, basis: "bbox" };
+}
+
 export async function parseIfc(buffer) {
   const W = await import(CDN + "web-ifc-api.js");
   const api = new W.IfcAPI();
@@ -59,6 +98,8 @@ export async function parseIfc(buffer) {
   try {
     const catOf = new Map(Object.entries(CATEGORY).filter(([k]) => W[k] != null).map(([k, c]) => [W[k], c]));
     const ids = (t) => { const v = api.GetLineIDsWithType(model, t); return Array.from({ length: v.size() }, (_, i) => v.get(i)); };
+    const [ua] = ids(W.IFCUNITASSIGNMENT);
+    const scale = ua ? lengthScale(api.GetLine(model, ua, true).Units || []) : 1;
 
     // 층: 높이순으로 1, 2, 3…
     const storeys = ids(W.IFCBUILDINGSTOREY)
@@ -132,17 +173,20 @@ export async function parseIfc(buffer) {
       const pre = line.PredefinedType?.value;
       if (category === "slab" && pre === "BASESLAB") category = "footing";
       if (category === "slab" && pre === "ROOF") category = "roof";
-      const w = Number(line.OverallWidth?.value) || 0, h = Number(line.OverallHeight?.value) || 0;
+      const w = (Number(line.OverallWidth?.value) || 0) * scale, h = (Number(line.OverallHeight?.value) || 0) * scale;
       return {
         expressID: id, globalId: line.GlobalId?.value || "", tag: line.Tag?.value || "", name: line.Name?.value || "",
         category, predefined: pre || "",
         floor: category === "footing" ? 0 : floorOf.get(id) || 1,
         volume: a.volume,
-        area: w && h ? w * h : a.surface / 2,
+        area: openingArea(w, h, a.surface),
         layers: matOf.get(id) || matOf.get(typeOf.get(id)) || [],
       };
     });
-    return { meshes, elements, size, floors: storeys.length || 1 };
+    // 층수: 부재가 실제로 들어 있는 층만 센다 (Revit의 기준 레벨·지붕 레벨 제외)
+    const used = new Set(elements.filter((e) => e.category !== "footing").map((e) => e.floor));
+    const floors = used.size || storeys.length || 1;
+    return { meshes, elements, size, floors, lengthScale: scale, gross: grossArea(elements, size, floors) };
   } finally {
     api.CloseModel(model);
   }

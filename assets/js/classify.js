@@ -1,5 +1,5 @@
 // IFC 부재(종류·재료 층·부피·면적) → 폐기물 성상별 톤수. DOM·web-ifc를 쓰지 않는다.
-import { SEPARATED, STREAMS } from "./scenario.js";
+import { SEPARATED, STREAMS, EXCLUDED } from "./scenario.js";
 
 export const CATEGORY_LABEL = {
   wall: "벽", slab: "슬래브", beam: "보", column: "기둥", footing: "기초", stair: "계단", roof: "지붕",
@@ -67,6 +67,9 @@ export function classify(el, rates, overrides = {}) {
     }
   }
 
+  // IfcBuildingElementProxy(기타)는 가구·가전·위생기구·조경수 같은 객체가 대부분이고 형상이 닫힌 솔리드가 아니어서
+  // 부피가 터무니없이 나온다 (나무 한 그루가 수백 t). 기본은 집계에서 빼고, 화면에서 성상을 고르면 넣는다.
+  if (el.category === "other") { for (const p of parts) p.stream = EXCLUDED; guessed = false; }
   const over = overrides[groupKey(el)];
   if (over) { for (const p of parts) p.stream = over; guessed = false; }
   const tons = parts.reduce((s, p) => s + p.tons, 0);
@@ -79,6 +82,7 @@ export function quantitiesFromElements(classified, area_m2) {
   const t = Object.fromEntries(STREAMS.map((s) => [s, 0]));
   let concrete_m3 = 0;
   for (const el of classified) for (const p of el.parts) {
+    if (!(p.stream in t)) continue; // 제외한 부재
     t[p.stream] += p.tons;
     if (p.cls === "concrete" && STRUCTURAL.has(el.category)) concrete_m3 += p.m3;
   }
@@ -119,7 +123,7 @@ export function elementResults(classified, p, mixedFee = p.fee_mixed_selective) 
     : s === "resin" ? p.rec_sel * gain(p.net_resin) : 0;
   return classified.map((el) => ({
     globalId: el.globalId, tag: el.tag, category: el.category, floor: el.floor, stream: el.stream,
-    method: SEPARATED.has(el.stream) ? "분별" : "압쇄",
+    method: el.stream === EXCLUDED ? "제외" : SEPARATED.has(el.stream) ? "분별" : "압쇄",
     tons: el.tons,
     disposal: el.parts.reduce((s, x) => s + x.tons * fee(x.stream), 0),
     revenue: el.parts.reduce((s, x) => s + x.tons * price(x.stream), 0),
