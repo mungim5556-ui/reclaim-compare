@@ -18,7 +18,7 @@ test("단위 정육면체: 부피 1, 겉넓이 6", () => {
 
 test("재료 이름 → 분류", () => {
   const cases = { "Concrete": "concrete", "콘크리트 24MPa": "concrete", "Gypsum Board": "board", "석고보드": "board", "Plywood": "wood", "Wood Stud": "wood",
-    "Steel Stud": "metal", "EPS Insulation": "insulation", "PVC Flooring": "resin", "Copper Pipe": "copper", "Aluminum": "aluminum", "벽돌": "masonry", "Ceramic Tile": "mixed", "Generic": null };
+    "Steel Stud": "metal", "EPS Insulation": "insulation", "PVC Flooring": "resin", "Copper Pipe": "copper", "Aluminum": "aluminum", "벽돌": "masonry", "Ceramic Tile": "tile", "Generic": null };
   for (const [name, cls] of Object.entries(cases)) assert.equal(materialClass(name), cls, name);
 });
 
