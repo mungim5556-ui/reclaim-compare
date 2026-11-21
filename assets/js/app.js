@@ -1,5 +1,5 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, DEFAULT_CONCRETE_CASE, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=selective-equipment-1";
+import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, DEFAULT_CONCRETE_CASE, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=equipment-auto-1";
 import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
 import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
 import { classify, quantitiesFromElements, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js";
@@ -9,7 +9,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const json = async (f) => (await fetch(`assets/data/${f}`)).json();
 const [rates, paper, validationDoc, kalisCases] = await Promise.all([
-  json("rates.json"), json("paper2023_case.json"), json("plan-validation.json"),
+  json("rates.json?v=equipment-auto-1"), json("paper2023_case.json"), json("plan-validation.json"),
   json("plans/kalis/index.json").then(d => d.items ?? []).catch(() => []),
 ]);
 const sampleCases = validationCases(validationDoc);
@@ -663,7 +663,9 @@ function extraLaborBreakEven(q, p, cmp, work) {
   const extendedDaysPerPd = (1 - q.overlap) / p.crew_size;
   const excavatorCrew = q.equipmentCrewPeriod === "all"
     && cmp.selective.equipmentCrewDays > 0 ? crew.structure : 0;
-  const costPerPd = p.wage_laborer * (1 - carpenterShare) + p.wage_carpenter * carpenterShare
+  const equipmentPerPd = q.selectiveEquipmentQuote == null
+    ? selectiveEquipmentHoursPerDay(p) * (p.selective_equipment_per_h ?? 0) / p.crew_size : 0;
+  const costPerPd = equipmentPerPd + p.wage_laborer * (1 - carpenterShare) + p.wage_carpenter * carpenterShare
     + extendedDaysPerPd * (p.indirect_per_day + p.wage_laborer * (crew.standing + excavatorCrew));
   const deltaWithoutExtra = cmp.delta - work.persons * costPerPd;
   return { limit: costPerPd > 0 ? -deltaWithoutExtra / costPerPd : null, deltaWithoutExtra };
@@ -706,7 +708,7 @@ function comparisonThresholds(q, p, cmp, work) {
   }
   return `<details class="card"><summary>분별 추가 공수 손익분기와 예상 반출 횟수</summary>
     <h3>분별 추가 공수</h3><p>${laborNote}</p>
-    <p class="caption muted">현재 비교에 포함된 비용을 기준으로, 추가 인건비와 공기 연장 비용을 함께 계산합니다.</p>
+    <p class="caption muted">현재 비교에 포함된 비용을 기준으로, 추가 인건비, 보조 장비비와 공기 연장 비용을 함께 계산합니다.</p>
     <h3>예상 반출 횟수</h3>
     <p class="caption muted">반출 그룹별 1회 ${capacity}t 만재를 가정한 중량 기준 참고치입니다. 콘크리트는 한 그룹으로 합산하고 고철·비철 매각품의 수거 차량은 별도입니다. 부피 제한·운반 거리에 따라 실제 횟수와 비용은 달라집니다.${q.panelWeightMissing ? " 중량 미확인 패널은 집계하지 않았습니다." : ""}</p>
     <div class="table-wrap"><table class="tbl">
@@ -720,10 +722,11 @@ function comparisonThresholds(q, p, cmp, work) {
 
 function extraEquipmentAllowance(q, cmp) {
   if (q.selectiveEquipmentQuote != null || cmp.unpricedCuts.length) return "";
-  const remaining = -cmp.delta;
+  const estimate = cmp.selective.rows.find(row => row.item === "분별 선철거·선별 소형 장비 (추정)")?.amount ?? 0;
+  const remaining = estimate - cmp.delta;
   const result = remaining > 0.005
     ? "분별의 추가 장비비가 " + num(remaining) + "원이면 두 안의 순비용이 같습니다."
-    : "기본 비교에서 분별이 부담할 수 있는 추가 장비비는 0원입니다.";
+    : "분별 보조 장비비를 0원으로 두어도 추가 비용 여유가 없습니다.";
   return '<p class="caption muted">현재 반영된 비용 기준 · ' + result + '</p>';
 }
 
@@ -805,7 +808,8 @@ function compareTab(d) {
     </section>
     <section class="card"><h2>비용 구성</h2>
       <p><strong>장비비</strong> · 압쇄 ${num(crush.equipment)}원 / 분별 ${num(selective.equipment)}원</p>
-      ${q.selectiveEquipmentQuote == null && Math.abs(selective.equipment - crush.equipment) < 0.005 ? '<p class="caption muted">두 안의 골조 장비 조건이 같습니다. 분별 선철거·선별 추가 장비비는 미입력입니다.</p>' : ""}
+      ${q.selectiveEquipmentQuote == null && selective.schedule.selective > 0 ? `<p class="caption muted">분별 보조 장비 · 추가 작업 ${num(selective.schedule.selective, 2)}일 × 하루 ${num(selectiveEquipmentHoursPerDay(p), 1)}시간 × ${num(p.selective_equipment_per_h ?? 0)}원/h (추정)</p>` : ""}
+      ${q.selectiveEquipmentQuote == null && selective.schedule.selective === 0 ? '<p class="caption muted">추가 분별 공수가 0인·일이면 공통 장비비를 적용합니다.</p>' : ""}
       ${extraEquipmentAllowance(q, cmp)}
       <p>분별 추가 매각수익 ${mil(selective.revenue-crush.revenue,2)}백만원 · 처리비 절감 ${mil(crush.disposal-selective.disposal,2)}백만원 · 추가 인건비 ${mil(selective.labor-crush.labor,2)}백만원</p>${stackedBars([{ ...crush, name: "일괄 압쇄" }, { ...selective, name: "전면 분별" }])}</section>
     ${comparisonThresholds(q, p, cmp, work)}
