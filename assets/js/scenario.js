@@ -184,7 +184,7 @@ export function costScenario(q, p, mode) {
   const crushShare = remainingCrushShare(q, mode);
   const segments = crushSegments(q, p, mode);
   const equipmentCrewDays = crushShare === 0 ? 0 : q.equipmentCrewPeriod === "all" ? days - sched.cutting
-    : equipmentMode(q) === "mixed" ? segments.reduce((sum, segment) => sum + segment.days, 0) / 2 : sched.crushing;
+    : segments.reduce((sum, segment) => sum + segment.days, 0) / crew.excavators;
   let labor = add("인건비", "상시 작업유도·감시", crew.standing * days, "인·일", p.wage_laborer)
     + add("인건비", "가설 설치 비계공", crew.setup * sched.setup, "인·일", p.wage_scaffold ?? p.wage_carpenter)
     + add("인건비", "내부 철거 인부", crew.interior * sched.interior, "인·일", p.wage_laborer)

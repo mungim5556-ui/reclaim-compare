@@ -72,7 +72,7 @@ test("상시 유도·감시와 굴착기 연동 인원은 투입일수에 맞게
   const whole = costScenario({ ...wide, equipmentCrewPeriod: "all" }, p, "selective");
   const qty = (s, item) => s.rows.find((r) => r.item === item).qty;
   assert.equal(qty(base, "상시 작업유도·감시"), base.days);
-  assert.equal(qty(base, "굴착기 연동 살수·신호"), base.schedule.structure * 4);
+  assert.equal(qty(base, "굴착기 연동 살수·신호"), base.excavatorHours / p.hours_per_day * p.crew_per_excavator);
   assert.equal(qty(whole, "굴착기 연동 살수·신호"), whole.days * 4);
   assert.equal(whole.days, base.days);
   assert.equal(whole.indirect, base.indirect);
