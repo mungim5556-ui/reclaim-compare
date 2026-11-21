@@ -137,6 +137,10 @@ export function steelDismantling(q) {
   };
 }
 
+export function selectiveEquipmentHoursPerDay(p) {
+  return p.selective_equipment_hours_per_day ?? 0;
+}
+
 export function costScenario(q, p, mode) {
   const sel = mode === "selective";
   // IFC 모델에는 철근이 없으므로 콘크리트 부피에서 추정하고, 그만큼 폐콘크리트 톤수에서 뺀다
@@ -188,7 +192,10 @@ export function costScenario(q, p, mode) {
   }
 
   if (sel && q.selectiveEquipmentQuote != null) {
-    equipment += add("장비비", "분별 선철거·선별 추가 장비", 1, "식", q.selectiveEquipmentQuote);
+    equipment += add("장비비", "분별 선철거·선별 추가 장비 (견적)", 1, "식", q.selectiveEquipmentQuote);
+  } else if (sel && sched.selective > 0) {
+    const hours = sched.selective * selectiveEquipmentHoursPerDay(p);
+    equipment += add("장비비", "분별 선철거·선별 소형 장비 (추정)", hours, "h", p.selective_equipment_per_h ?? 0);
   }
   if (cut.active && cut.ready && !cut.quoteMissing) equipment += add("장비비", "콘크리트 절단·인양 도급비 (장비·인력 포함)", 1, "식", cut.cost);
 
