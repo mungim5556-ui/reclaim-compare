@@ -650,6 +650,72 @@ function concreteCutBreakEven(q, cmp) {
     : ` ${label}의 절단·인양 도급비가 ${num(limit)}원이면 두 공법의 순비용이 같습니다.`.trim();
 }
 
+
+function extraLaborBreakEven(q, p, cmp, work) {
+  if (cmp.unpricedCuts.length) return null;
+  const crew = cmp.selective.crews;
+  const carpenterShare = work.persons > 0
+    ? work.rows.filter(row => row.wage === "carpenter").reduce((sum, row) => sum + row.qty, 0) / work.persons
+    : q.labor === "quantity" ? (q.carpenterShare ?? 0) / 100
+      : p.sel_extra_carpenter / (p.sel_extra_carpenter + p.sel_extra_laborer || 1);
+  const extendedDaysPerPd = (1 - q.overlap) / p.crew_size;
+  const excavatorCrew = q.equipmentCrewPeriod === "all"
+    && cmp.selective.equipmentCrewDays > 0 ? crew.structure : 0;
+  const costPerPd = p.wage_laborer * (1 - carpenterShare) + p.wage_carpenter * carpenterShare
+    + extendedDaysPerPd * (p.indirect_per_day + p.wage_laborer * (crew.standing + excavatorCrew));
+  const deltaWithoutExtra = cmp.delta - work.persons * costPerPd;
+  return { limit: costPerPd > 0 ? -deltaWithoutExtra / costPerPd : null, deltaWithoutExtra };
+}
+
+function wasteHauls(q, p, cmp) {
+  const { t } = streamTons(q, p);
+  const capacity = 24;
+  const groups = [
+    ["콘크리트", result => result.concreteIntake],
+    ["폐벽돌·조적", () => t.masonry],
+    ["혼합잔재·혼합 반출 유리", result => result.mixed.tons + (q.windowMode ? q.windowGlassTons ?? 0 : 0)],
+    ["미회수 기타 금속", result => result.unsoldMetal],
+    ["샌드위치패널", () => t.panel],
+    ...["board", "tile", "glass", "wood"].map(key => [STREAM_LABEL[key] + " 분리 반출", result => result.split[key] ?? 0]),
+    ["폐합성수지 분리 반출", result => Math.max(0, result.split.resin - (q.windowMode && q.pvcPrice > 0 ? q.pvcFrameTons ?? 0 : 0))],
+  ];
+  const rows = groups.map(([label, weight]) => ({
+    label,
+    crush: weight(cmp.crush),
+    selective: weight(cmp.selective),
+  })).filter(row => row.crush > 0 || row.selective > 0);
+  const trips = weight => Math.ceil(weight / capacity);
+  return { capacity, rows, trips, totals: ["crush", "selective"].map(key => rows.reduce((sum, row) => sum + trips(row[key]), 0)) };
+}
+
+function comparisonThresholds(q, p, cmp, work) {
+  const labor = extraLaborBreakEven(q, p, cmp, work);
+  const { capacity, rows, trips, totals } = wasteHauls(q, p, cmp);
+  const displayCell = weight => weight ? num(weight, 2) + "t · " + num(trips(weight)) + "회" : "–";
+  let laborNote = "절단·인양 견적이 입력되면 추가 공수의 손익분기를 계산합니다.";
+  if (labor) {
+    if (labor.deltaWithoutExtra > 0.005) {
+      laborNote = "추가 공수가 0인·일이어도 압쇄가 " + num(labor.deltaWithoutExtra) + "원 저렴합니다.";
+    } else if (labor.limit == null) {
+      laborNote = "현재 적용한 비용에서는 추가 공수에 따른 비용 차이가 없습니다.";
+    } else {
+      laborNote = "분별 추가 공수 " + num(work.persons, 2) + "인·일 · 손익분기 " + num(Math.max(0, labor.limit), 2) + "인·일";
+    }
+  }
+  return `<details class="card"><summary>분별 추가 공수 손익분기와 예상 반출 횟수</summary>
+    <h3>분별 추가 공수</h3><p>${laborNote}</p>
+    <p class="caption muted">현재 비교에 포함된 비용을 기준으로, 추가 인건비와 공기 연장 비용을 함께 계산합니다.</p>
+    <h3>예상 반출 횟수</h3>
+    <p class="caption muted">반출 그룹별 1회 ${capacity}t 만재를 가정한 중량 기준 참고치입니다. 콘크리트는 한 그룹으로 합산하고 고철·비철 매각품의 수거 차량은 별도입니다. 부피 제한·운반 거리에 따라 실제 횟수와 비용은 달라집니다.${q.panelWeightMissing ? " 중량 미확인 패널은 집계하지 않았습니다." : ""}</p>
+    <div class="table-wrap"><table class="tbl">
+      <thead><tr><th>반출 그룹</th><th class="r">압쇄</th><th class="r">분별</th></tr></thead>
+      <tbody>${rows.map(row => `<tr><td>${esc(row.label)}</td><td class="r">${displayCell(row.crush)}</td><td class="r">${displayCell(row.selective)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>예상 합계</td><td class="r">${num(totals[0])}회</td><td class="r">${num(totals[1])}회</td></tr></tfoot>
+    </table></div>
+    <p class="caption muted">운반비는 현장 조건의 양쪽 운반 견적으로 반영합니다.</p>
+  </details>`;
+}
+
 function compareTab(d) {
   if (!d) return empty();
   if (d.comparisonLimit) return planLimitNotice(d);
@@ -727,6 +793,7 @@ function compareTab(d) {
       <div class="card kpi"><div class="v">${num(sim.pSelective * 100, 1)}%</div><div class="l">분별 순비용이 낮은 시행 비율</div><div class="s">${num(sim.n)}회 · ${simulationScope}</div></div>
     </section>
     <section class="card"><h2>비용 구성</h2><p>분별 추가 매각수익 ${mil(selective.revenue-crush.revenue,2)}백만원 · 처리비 절감 ${mil(crush.disposal-selective.disposal,2)}백만원 · 추가 인건비 ${mil(selective.labor-crush.labor,2)}백만원</p>${stackedBars([{ ...crush, name: "일괄 압쇄" }, { ...selective, name: "전면 분별" }])}</section>
+    ${comparisonThresholds(q, p, cmp, work)}
     ${officeSalvageCard(q, p, delta)}
     <section class="card"><h2>혼합잔재 처리비</h2>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>공법</th><th class="r">잔재량</th><th class="r">가연물 비율</th><th class="r">단가</th><th>적용 근거</th></tr></thead><tbody>
