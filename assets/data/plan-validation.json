@@ -103,7 +103,10 @@
       "scope": "partial",
       "equipment": "unknown",
       "site": "unknown",
-      "area_m2": 13.5,
+      "facilities": [
+        { "name": "창고", "structure": "샌드위치패널", "area_m2": 13.5 },
+        { "name": "농구장 차양막", "structure": "일반철골조", "area_m2": null }
+      ],
       "floors": 1,
       "type": "plan",
       "verified": true,

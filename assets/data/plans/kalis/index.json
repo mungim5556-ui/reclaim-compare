@@ -17,7 +17,12 @@
     "masonry_m3": 55,
     "finish_m3": 7.7,
     "members": 20
-   }
+   },
+   "inputs": {
+    "structure": "other",
+    "scope": "full"
+   },
+   "costNote": "벽돌 내력벽 해체에 RC 공기·장비식을 사용한 참고 비교입니다."
   },
   {
    "file": "plans/kalis/02-shops.json",
@@ -35,7 +40,11 @@
     "masonry_m3": 0,
     "finish_m3": 143.5,
     "members": 602
-   }
+   },
+   "inputs": {
+    "scope": "above"
+   },
+   "costNote": "존치하는 지하층과 잔재 채움 작업의 비용은 포함되지 않습니다."
   },
   {
    "file": "plans/kalis/03-multifamily-transfer.json",
@@ -53,7 +62,11 @@
     "masonry_m3": 0,
     "finish_m3": 241.3,
     "members": 349
-   }
+   },
+   "inputs": {
+    "scope": "full"
+   },
+   "costNote": "지하 해체 전 흙막이 공사 비용은 비교 합계에 포함되지 않습니다."
   },
   {
    "file": "plans/kalis/04-apartment.json",
@@ -71,6 +84,9 @@
     "masonry_m3": 0,
     "finish_m3": 381.4,
     "members": 799
+   },
+   "inputs": {
+    "scope": "full"
    }
   },
   {
@@ -89,7 +105,12 @@
     "masonry_m3": 0,
     "finish_m3": 487.2,
     "members": 1705
-   }
+   },
+   "inputs": {
+    "structure": "other",
+    "scope": "above"
+   },
+   "costNote": "지상 타워 범위입니다. 철골 절단·인양 견적이 없으면 비용 차이에서 제외합니다. 구조체 해체 공기는 참고값입니다."
   },
   {
    "file": "plans/kalis/06-office-below.json",
@@ -107,7 +128,11 @@
     "masonry_m3": 0,
     "finish_m3": 198,
     "members": 153
-   }
+   },
+   "inputs": {
+    "scope": "partial"
+   },
+   "comparisonLimit": "지하 4개 층만 집계했습니다. 흙막이·기초 해체와 지하 반출의 작업량과 단가가 필요합니다."
   },
   {
    "file": "plans/kalis/07-factory.json",
@@ -125,7 +150,12 @@
     "masonry_m3": 356.1,
     "finish_m3": 0,
     "members": 265
-   }
+   },
+   "inputs": {
+    "structure": "other",
+    "scope": "full"
+   },
+   "comparisonLimit": "지붕 트러스는 등가 형강으로 환산했습니다. 지붕·벽 패널과 바닥 슬래브가 빠져 있고, 철골 절단·인양 견적이 필요합니다."
   }
  ]
 }

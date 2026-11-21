@@ -58,3 +58,15 @@ test("기타 객체(IfcBuildingElementProxy)는 기본으로 물량에서 빠지
   assert.ok(inc.t.mixed > 0);
   assert.equal(elementResults([classify(tree, rates)], paramValues(rates))[0].method, "제외");
 });
+
+test("사각 중공 단면의 생략된 2D 원점만 보완한다", async () => {
+  const { normalizeHollowProfilePositions } = await import("../assets/js/ifc.js");
+  const text = "DATA;\n#23=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,'TUBE',$,0.075,0.075,0.0032,$,$);\nENDSEC;";
+  const input = new TextEncoder().encode(text);
+  const output = new TextDecoder().decode(normalizeHollowProfilePositions(input));
+  assert.match(output, /'TUBE',#25,0.075/);
+  assert.match(output, /#25=IFCAXIS2PLACEMENT2D\(#24,\$\)/);
+  assert.ok(new TextDecoder().decode(input).includes("'TUBE',$,"));
+  const normalized = new TextEncoder().encode(output);
+  assert.equal(normalizeHollowProfilePositions(normalized), normalized);
+});

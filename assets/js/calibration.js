@@ -32,6 +32,20 @@ export function validationCases(doc) {
     const out = { id, name: row.name.trim(), source: row.source.trim(), structure: row.structure, scope: row.scope,
       equipment: row.equipment, site: row.site, type: row.type, verified: row.verified, area_m2: row.area_m2,
       floors: row.floors, note: typeof row.note === "string" ? row.note : "" };
+    if (row.facilities != null) {
+      if (!Array.isArray(row.facilities) || !row.facilities.length) invalid("대상 시설");
+      out.facilities = row.facilities.map(f => {
+        if (!f || typeof f.name !== "string" || !f.name.trim() || typeof f.structure !== "string") invalid("시설명·구조");
+        if (f.area_m2 != null && !(Number.isFinite(f.area_m2) && f.area_m2 > 0)) invalid("시설 면적");
+        const item = { name: f.name, structure: f.structure, area_m2: f.area_m2 ?? null };
+        for (const key of ["crushQuote", "selectiveQuote", "steelTons"]) {
+          if (f[key] == null) continue;
+          if (!Number.isFinite(f[key]) || f[key] < 0) invalid("시설 견적·중량");
+          item[key] = f[key];
+        }
+        return item;
+      });
+    }
     for (const key of optionalNumbers) {
       if (row[key] == null) continue;
       if (!Number.isFinite(row[key]) || row[key] < 0) invalid(key);
@@ -68,7 +82,7 @@ const absoluteError = (actual, predicted) => Math.abs(predicted - actual);
 
 export function calibrateStructure(cases, q, p, type) {
   // Number of machine-days is part of the current prediction. Require comparable volume for fitting.
-  const rows = comparableCases(cases, q, type).filter((row) => row.structure_days > 0 && row.concrete_m3 > 0);
+  const rows = comparableCases(cases, q, type).filter(row => row.equipment !== "mixed").filter((row) => row.structure_days > 0 && row.concrete_m3 > 0);
   const samples = rows.map((row) => {
     const input = caseQuantity(row);
     const base = schedule(input, p, "crush");

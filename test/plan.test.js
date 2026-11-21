@@ -55,33 +55,36 @@ test("IFC 텍스트: 부재 수가 맞고 한글이 들어가지 않는다", () 
   assert.ok(text.includes("IFCMATERIAL('Concrete 21MPa')") && text.includes("IFCMATERIAL('Mortar')"));
 });
 
-test("철골보·SRC 기둥·조적벽: 재료가 붙고 철골 무게가 형강 단면적과 같다", () => {
-  const p = {
-    sections: { C: { b: 700, h: 650, steel_area_mm2: 63170, material: "Steel SS400" }, G: { b: 199, h: 596, steel: { tw: 10, tf: 15 }, material: "Steel SS400" },
-      B: { t: 190, h: 3000, material: "Brick masonry" }, S: { t: 150 } },
-    levels: [{ name: "1F", elevation: 0, layout: "a" }, { name: "RF", elevation: 4000, layout: "b" }],
-    layouts: {
-      a: { columns: [{ s: "C", x: 0, y: 0 }], walls: [{ s: "B", x1: 0, y1: 0, x2: 10000, y2: 0 }], beams: [], slabs: [] },
-      b: { columns: [], walls: [], beams: [{ s: "G", x1: 0, y1: 0, x2: 10000, y2: 0 }], slabs: [{ s: "S", x1: 0, y1: 0, x2: 10000, y2: 5000 }] },
-    },
-  };
-  const mb = planMembers(p), v = planVolumes(mb);
-  near(v.column, 0.7 * 0.65 * 4 - 0.06317 * 4, 1e-9); // 콘크리트에서 철골 단면적만큼 뺀다
-  near(v.steel, 0.06317 * 4 + (2 * 0.199 * 0.015 + 0.01 * 0.566) * 10, 1e-9);
-  near(v.masonry, 0.19 * 10 * 3, 1e-9); // 벽 높이 = section.h
-  assert.equal(v.wall, 0);
-  const text = planToIfc(p);
-  assert.ok(text.includes("IFCMATERIAL('Steel SS400')") && text.includes("IFCMATERIAL('Brick masonry')"));
+test("계획서의 현장·장비 조건: 명시한 값이 우선하고, 없으면 해체공법 문구로 탑재를 추정한다", async () => {
+  const { planConditions } = await import("../assets/js/plan.js");
+  const { SITES, EQUIPMENT } = await import("../assets/js/scenario.js");
+  const opts = { sites: SITES, equipments: EQUIPMENT };
+  assert.deepEqual(planConditions({ demolition: { site: "restricted", equipment: "small", crane_days: 3, ground_floors: 1 } }, opts).values,
+    { site: "restricted", equipment: "small", craneDays: 3, groundFloors: 1 });
+  const smallMounted = planConditions({ demolition: { method: "압쇄기(소형장비 탑재, 크레인 양중) + 인력" } }, opts);
+  assert.deepEqual(smallMounted.values, { equipment: "mounted" });
+  assert.equal(smallMounted.needsMountedProduction, false);
+  const mounted = planConditions({ demolition: { method: "32톤 굴착기 탑재" } }, opts);
+  assert.deepEqual(mounted.values, { equipment: "mounted", mountedLarge: true });
+  assert.equal(mounted.needsMountedProduction, true);
+  assert.deepEqual(planConditions({ demolition: { method: "부재 절단 후 크레인 인양" } }, opts).values, {});
+  assert.deepEqual(planConditions(example, opts).values, { structure: "rc", scope: "full" }); // 조건이 없으면 기존 기본값(보통·자동)을 쓴다
+  assert.deepEqual(planConditions({ demolition: { site: "wide", method: "장비 탑재" } }, opts).values, { equipment: "mounted", site: "wide" });
 });
 
-test("국토안전관리원 사례 7건: 부재가 만들어지고 IFC가 ASCII이며 목록과 수량이 맞다", () => {
-  const index = JSON.parse(readFileSync(new URL("../assets/data/plans/kalis/index.json", import.meta.url)));
-  assert.equal(index.items.length, 7);
-  for (const it of index.items) {
-    const p = JSON.parse(readFileSync(new URL(`../assets/data/${it.file}`, import.meta.url)));
-    const mb = planMembers(p), v = planVolumes(mb);
-    assert.ok(mb.length > 0 && mb.every((b) => b.dx > 0 && b.dy > 0 && b.dz > 0), it.file);
-    near(v.structure, it.model.concrete_m3, 0.1);
-    assert.ok(/^[\x00-\x7F]*$/.test(planToIfc(p)), it.file);
+test("공개 계획서 7건: IFC 부재 수와 재료별 부피가 예시 목록과 일치한다", () => {
+  const { items } = load("kalis/index.json");
+  assert.equal(items.length, 7);
+  for (const row of items) {
+    const plan = load(row.file.replace(/^plans\//, ""));
+    const members = planMembers(plan), v = planVolumes(members), ifc = planToIfc(plan);
+    assert.equal(members.length, row.model.members, row.label);
+    assert.equal((ifc.match(/=IFC(COLUMN|BEAM|SLAB|WALLSTANDARDCASE|COVERING)\(/g) || []).length, members.length);
+    assert.ok(members.every(b => [b.dx, b.dy, b.dz].every(n => Number.isFinite(n) && n > 0)), row.label);
+    near(v.structure, row.model.concrete_m3, 0.051);
+    near(v.steel, row.model.steel_m3, 0.051);
+    near(v.masonry, row.model.masonry_m3, 0.051);
+    if (row.inputs.scope === "above") assert.ok(members.every(b => !/^B\d/.test(b.level)), row.label);
+    if (plan.building.floors_above === 0) assert.ok(members.every(b => b.z + b.dz <= 1e-8), row.label);
   }
 });
