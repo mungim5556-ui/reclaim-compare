@@ -92,13 +92,19 @@ test("일당 간접비 70만원과 50~90만원 탐색 범위가 계산에 들어
   assert.notEqual(simulate(q, p, [v], { n: 50 }).p10, simulate(q, p, [v], { n: 50 }).p90);
 });
 
-test("총액 = 내역 행의 합, 구조체 비용은 두 안이 같다", () => {
+test("총액은 내역의 합이며 분별 보조 장비는 추가 작업에만 계상한다", () => {
   const { crush, selective } = compare(q, p);
   for (const s of [crush, selective]) {
     assert.ok(Math.abs(s.rows.reduce((a, r) => a + r.amount, 0) - s.total) < 1);
     assert.ok(s.total > 0 && s.days > 0);
   }
-  assert.equal(crush.equipment, selective.equipment);
+  const estimated = selective.schedule.selective * p.selective_equipment_hours_per_day * p.selective_equipment_per_h;
+  assert.ok(estimated > 0);
+  assert.ok(Math.abs(selective.equipment - crush.equipment - estimated) < 1e-6);
+  const quoted = compare({ ...q, selectiveEquipmentQuote: 1200000 }, p);
+  assert.ok(Math.abs(quoted.selective.equipment - quoted.crush.equipment - 1200000) < 1e-6);
+  const parallel = compare({ ...q, overlap: 1 }, p);
+  assert.equal(parallel.selective.equipment, selective.equipment);
   assert.ok(selective.labor > crush.labor && selective.disposal < crush.disposal && selective.days > crush.days);
 });
 
@@ -376,12 +382,13 @@ test("공법별 콘크리트 절단·인양 견적은 해당 구간의 압쇄 �
   assert.equal(result.crush.total, base.crush.total);
   assert.ok(Math.abs(result.selective.excavatorHours - base.selective.excavatorHours * 0.6) < 1e-9);
   assert.ok(Math.abs(result.selective.schedule.structure - (base.selective.schedule.structure * 0.6 + 3)) < 1e-9);
-  assert.ok(Math.abs(result.selective.equipment - (base.selective.equipment * 0.6 + cut.cost)) < 1e-6);
+  const prep = base.selective.schedule.selective * p.selective_equipment_hours_per_day * p.selective_equipment_per_h;
+  assert.ok(Math.abs(result.selective.equipment - ((base.selective.equipment - prep) * 0.6 + prep + cut.cost)) < 1e-6);
   assert.ok(Math.abs(result.selective.indirect - result.selective.days * p.indirect_per_day) < 1e-6);
   assert.ok(Math.abs(result.deltaDays - (result.selective.days - result.crush.days)) < 1e-9);
   assert.equal(result.selective.disposal, base.selective.disposal);
   const both = compare({ ...input, concreteCut: { crush: cut, selective: cut } }, p);
-  assert.equal(both.crush.equipment, both.selective.equipment);
+  assert.ok(Math.abs(both.selective.equipment - both.crush.equipment - prep) < 1e-6);
   const full = compare({ ...input, masonry_m3: 0, concreteCut: { crush: { ...cut, volume: 100, cost: 0 } } }, p);
   assert.equal(full.crush.excavatorHours, 0);
   assert.equal(full.crush.equipmentCrewDays, 0);
