@@ -75,6 +75,7 @@ const save = () => {
 
 // Exact uploads from the plan validation set. Partial scopes require a scoped IFC.
 const uploadedPlanScopes = {
+  "5149423472c717fc72e4db992187cc7a3f9650164a097389a0d8adfb8a45fea9": { usage: "비주거 RC" }, // 서대신동 474-47
   "932494c18be9ca9681ac97b101b9a1c172f1efd7a976a5d73d68dc77e49d986a": { usage: "단독주택" }, // 01-house.json
   "de0ee7556962d356f80a317b79999a7ba21808488b606bf5769ffde48df54e0e": { usage: "비주거 RC" }, // 02-shops.json
   "9955b8c35f7769961e315c49ceb6fc3d808df810237e2d744d312a93e91c9f51": { usage: "공동주택" }, // 03-multifamily-transfer.json
@@ -891,7 +892,7 @@ function compareTab(d) {
     <section class="kpis">
       <div class="card kpi"><div class="v">${mil(crush.total)}</div><div class="l">일괄 압쇄 순비용 (백만원)${steel.excluded ? " · 철골비 별도" : ""}</div><div class="s">공기 ${num(crush.days)}일</div></div>
       <div class="card kpi"><div class="v">${mil(selective.total)}</div><div class="l">전면 분별해체 순비용 (백만원)${steel.excluded ? " · 철골비 별도" : ""}</div><div class="s">공기 ${num(selective.days)}일 (${cmp.deltaDays >= 0 ? "+" : ""}${num(cmp.deltaDays, 1)}일)</div></div>
-      <div class="card kpi"><div class="v">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${mil(Math.abs(delta))}</div><div class="l">Δ = 분별 − 압쇄 (백만원)</div><div class="s">${d.basis ? "포함 항목 기준 차이" : "음수면 분별이 유리"}</div></div>
+      <div class="card kpi"><div class="v">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${mil(Math.abs(delta))}</div><div class="l">Δ = 분별 − 압쇄 (백만원)</div><div class="s">${d.basis ? esc(d.basis) + " · " : ""}음수면 분별이 유리</div></div>
       <div class="card kpi"><div class="v">${num(sim.pSelective * 100, 1)}%</div><div class="l">분별 순비용이 낮은 시행 비율</div><div class="s">${num(sim.n)}회 · ${simulationScope}</div></div>
     </section>
     <section class="card"><h2>비용 구성</h2>
