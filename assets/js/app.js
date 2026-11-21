@@ -348,6 +348,7 @@ function modelTab(d) {
           <label><input type="checkbox" data-set="officeMaterials" ${officeRecoveryEnabled() ? "checked" : ""}> 사무소 시나리오 · 입력이 없는 품목을 면적으로 추정</label>
           </details>
           </fieldset>
+          ${numeric("selectiveEquipmentQuote", "분별 선철거·선별 추가 장비 견적 (원)", { placeholder: "별도 견적이 있을 때 입력" })}
           ${numeric("transportCrush", "일괄 압쇄 수집·운반 견적 (원, VAT 별도)")}
           ${numeric("transportSel", "전면 분별 수집·운반 견적 (원, VAT 별도)")}
           <p class="caption muted">현장에서 처리장까지 별도로 지불하는 수집·운반비만 입력하세요. 처리 견적에 포함된 운반비는 0원을 입력하고, 비용 자체를 모르면 비워두세요.</p>
@@ -717,6 +718,15 @@ function comparisonThresholds(q, p, cmp, work) {
   </details>`;
 }
 
+function extraEquipmentAllowance(q, cmp) {
+  if (q.selectiveEquipmentQuote != null || cmp.unpricedCuts.length) return "";
+  const remaining = -cmp.delta;
+  const result = remaining > 0.005
+    ? "분별의 추가 장비비가 " + num(remaining) + "원이면 두 안의 순비용이 같습니다."
+    : "기본 비교에서 분별이 부담할 수 있는 추가 장비비는 0원입니다.";
+  return '<p class="caption muted">현재 반영된 비용 기준 · ' + result + '</p>';
+}
+
 function compareTab(d) {
   if (!d) return empty();
   if (d.comparisonLimit) return planLimitNotice(d);
@@ -796,11 +806,7 @@ function compareTab(d) {
     <section class="card"><h2>비용 구성</h2>
       <p><strong>장비비</strong> · 압쇄 ${num(crush.equipment)}원 / 분별 ${num(selective.equipment)}원</p>
       ${q.selectiveEquipmentQuote == null && Math.abs(selective.equipment - crush.equipment) < 0.005 ? '<p class="caption muted">두 안의 골조 장비 조건이 같습니다. 분별 선철거·선별 추가 장비비는 미입력입니다.</p>' : ""}
-      <details ${q.selectiveEquipmentQuote != null || state.formError ? "open" : ""}><summary>분별안에만 장비를 더 쓰는 경우</summary>
-        <p class="caption muted">분별에 추가로 사용하는 장비의 총액을 입력하세요. 골조 압쇄나 별도 절단·인양 견적에 이미 포함된 장비비는 빼고 입력하세요.</p>
-        ${numeric("selectiveEquipmentQuote", "분별 추가 장비비 (원)")}
-        ${state.formError ? `<p class="badge badge-danger">${esc(state.formError)}</p>` : ""}
-      </details>
+      ${extraEquipmentAllowance(q, cmp)}
       <p>분별 추가 매각수익 ${mil(selective.revenue-crush.revenue,2)}백만원 · 처리비 절감 ${mil(crush.disposal-selective.disposal,2)}백만원 · 추가 인건비 ${mil(selective.labor-crush.labor,2)}백만원</p>${stackedBars([{ ...crush, name: "일괄 압쇄" }, { ...selective, name: "전면 분별" }])}</section>
     ${comparisonThresholds(q, p, cmp, work)}
     ${officeSalvageCard(q, p, delta)}
