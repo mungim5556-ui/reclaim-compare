@@ -4,4 +4,6 @@ node_modules
 # 실제 해체계획서에서 옮긴 데이터는 공개 저장소에 올리지 않는다
 assets/data/plans/*
 !assets/data/plans/example.json
+# 국토안전관리원이 공개한 익명화 해체계획서 사례(예시집·사례집)에서 옮긴 데이터는 올린다
+!assets/data/plans/kalis/
 scripts/make_private_plan.mjs

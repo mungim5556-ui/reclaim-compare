@@ -9,6 +9,8 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const json = async (f) => (await fetch(`assets/data/${f}`)).json();
 const [rates, paper, validationDoc] = await Promise.all([json("rates.json"), json("paper2023_case.json"), json("plan-validation.json")]);
+// 국토안전관리원 해체계획서 사례 7건을 옮긴 계획서 데이터 목록 (없으면 목록을 숨긴다)
+const cases = await json("plans/kalis/index.json").then((d) => d.items).catch(() => []);
 const sampleCases = validationCases(validationDoc);
 const defaults = paramValues(rates);
 
@@ -134,6 +136,7 @@ function modelTab(d) {
         <div class="row no-print">
           <label class="btn btn-outline">계획서 데이터(JSON) 고르기<input type="file" id="planfile" accept=".json" hidden></label>
           <button class="btn btn-outline" data-act="plan-sample">계획서 예시 (가상 건물)</button>
+          ${cases.length ? `<select class="select" id="plancase" style="max-width:340px"><option value="">국토안전관리원 사례 계획서 고르기…</option>${cases.map((c) => `<option value="${esc(c.file)}">${esc(c.label)} · ${esc(c.structure)} · ${esc(c.floors)} · ${num(c.area_m2)}㎡</option>`).join("")}</select>` : ""}
         </div>
         ${state.busy ? `<p class="badge badge-info">${esc(state.busy)}</p>` : ""}
         ${state.error ? `<p class="badge badge-danger">${esc(state.error)}</p>` : ""}
@@ -233,12 +236,12 @@ function planCard(q) {
   const assumed = Object.entries(plan.sections).filter(([, s]) => s.assumed).map(([k]) => k);
   return `<section class="card"><h2>해체계획서에서 읽은 정보</h2>
     <div class="table-wrap"><table class="tbl"><tbody>
-      <tr><th>건물</th><td>${esc(b.name)} · ${esc(b.usage)} · ${esc(b.structure)} · ${b.built}년 · 지하 ${b.floors_below} / 지상 ${b.floors_above}층</td></tr>
+      <tr><th>건물</th><td>${esc(b.name)} · ${esc(b.usage)} · ${esc(b.structure)} · ${b.built ? b.built + "년 · " : ""}지하 ${b.floors_below} / 지상 ${b.floors_above}층</td></tr>
       <tr><th>면적</th><td>연면적 ${num(b.area_m2, 1)}㎡ · 해체 연면적 ${num(b.demolition_area_m2, 2)}㎡</td></tr>
       <tr><th>해체</th><td>${esc(d.scope || "–")} · ${esc(d.method || "–")}${d.period ? ` · ${d.period.join(" ~ ")}` : ""}</td></tr>
       <tr><th>재료</th><td>콘크리트 ${plan.materials.concrete_fck_MPa}MPa · 철근 ${plan.materials.rebar_fy_MPa}MPa · 철근량 ${num(plan.rebar_kg_per_m3?.value || 0)}kg/㎥ (${esc(plan.rebar_kg_per_m3?.note || "")})</td></tr>
-      <tr><th>유해물질</th><td>석면 ${plan.hazards?.asbestos ? "검출" : "불검출"}</td></tr>
-      <tr><th>부재</th><td class="mono">${Object.entries(plan.sections).map(([k, s]) => `${k} ${s.t ? "T" + s.t : s.b + "×" + s.h}`).join(" · ")}</td></tr>
+      <tr><th>유해물질</th><td>석면 ${plan.hazards?.asbestos ? "검출" : "불검출"}${plan.hazards?.note ? ` (${esc(plan.hazards.note)})` : ""}</td></tr>
+      <tr><th>부재</th><td class="mono">${Object.entries(plan.sections).map(([k, s]) => `${k} ${s.t ? "T" + s.t : s.b + "×" + s.h}${s.material ? " " + esc(s.material) : ""}`).join(" · ")}</td></tr>
     </tbody></table></div>
     ${want ? `<p style="margin-top:12px"><strong>검산:</strong> 생성한 모델의 콘크리트 ${num(model)}t ÷ 계획서 폐콘크리트 약 ${num(want)}t = <strong>${num((model / want) * 100)}%</strong>. 물량 비교에는 부재 포함 범위와 산출 기준의 차이가 있을 수 있습니다.</p>` : ""}
     <p class="caption muted" style="margin-top:8px">구조체(기둥·보·벽·슬래브)와 바닥 마감 몰탈만 들어 있습니다. 내장재·창호·설비는 계획서에 없어 원단위로 보충합니다.${assumed.length ? ` 치수를 가정한 부재: ${assumed.join(", ")}.` : ""} ${esc(plan.source?.note || "")}</p>
@@ -538,6 +541,10 @@ document.addEventListener("click", async (e) => {
 document.addEventListener("change", async (e) => {
   const t = e.target;
   if (t.id === "file" && t.files[0]) return loadIfc(await t.files[0].arrayBuffer(), t.files[0].name);
+  if (t.id === "plancase" && t.value) {
+    const c = cases.find((x) => x.file === t.value);
+    return loadPlan(await json(t.value), `${c.label} (국토안전관리원 사례)`);
+  }
   if (t.id === "planfile" && t.files[0]) {
     try { return loadPlan(JSON.parse(await t.files[0].text()), t.files[0].name); }
     catch (e) { state.error = `JSON을 읽지 못했습니다: ${e.message}`; return render(); }

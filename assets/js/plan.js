@@ -3,6 +3,8 @@
 // 좌표는 mm, y는 도면처럼 아래로 증가. 보·벽은 축에 나란한 선분만 지원한다.
 
 const m = (mm) => mm / 1000;
+// 부재 재료: section.material이 있으면 그 이름(예: "Brick masonry", "Steel SS400"), 없으면 콘크리트
+const matOf = (sec) => (sec?.material ? { material: sec.material } : {});
 
 // 계획서 → 상자 목록 [{kind, name, level, cx, cy, z, dx, dy, dz}] (m 단위, z는 바닥 높이)
 export function planMembers(plan, { demolitionOnly = true } = {}) {
@@ -20,24 +22,47 @@ export function planMembers(plan, { demolitionOnly = true } = {}) {
     };
     for (const o of lay.slabs) {
       const box = [(o.x1 + o.x2) / 2, (o.y1 + o.y2) / 2, 0, Math.abs(o.x2 - o.x1), Math.abs(o.y2 - o.y1)];
-      add("slab", o.s, box[0], box[1], z0 - S[o.s].t, box[3], box[4], S[o.s].t, { roof: !height || lv.layout === "roof" });
+      add("slab", o.s, box[0], box[1], z0 - S[o.s].t, box[3], box[4], S[o.s].t, { roof: !height || lv.layout === "roof", ...matOf(S[o.s]) });
       if (finish && height) add("finish", finish.material, box[0], box[1], z0, box[3], box[4], finish.thickness, { material: finish.material });
     }
     for (const o of lay.beams) {
-      const [cx, cy, dx, dy] = along(o, S[o.s].b), drop = S[o.s].h - slabT; // 슬래브와 겹치는 부분은 뺀다
-      add("beam", o.s, cx, cy, z0 - slabT - drop, dx, dy, drop);
+      const sec = S[o.s];
+      if (sec.steel) {
+        // 철골보(H형강): 위·아래 플랜지와 웨브 세 상자. 윗면 = 슬래브 아랫면. 무게가 형강 단면적과 맞도록 한다.
+        const { tw, tf } = sec.steel, mat = { material: sec.material || "Steel" }, top = z0 - slabT;
+        const [cx, cy, fx, fy] = along(o, sec.b), [, , wx, wy] = along(o, tw);
+        add("beam", o.s, cx, cy, top - tf, fx, fy, tf, mat);
+        add("beam", o.s, cx, cy, top - sec.h + tf, wx, wy, sec.h - 2 * tf, mat);
+        add("beam", o.s, cx, cy, top - sec.h, fx, fy, tf, mat);
+        continue;
+      }
+      const [cx, cy, dx, dy] = along(o, sec.b), drop = sec.h - slabT; // 슬래브와 겹치는 부분은 뺀다
+      add("beam", o.s, cx, cy, z0 - slabT - drop, dx, dy, drop, matOf(sec));
     }
     if (!height) return;
-    for (const o of lay.columns) add("column", o.s, o.x, o.y, z0, S[o.s].b, S[o.s].h, height);
-    for (const o of lay.walls) { const [cx, cy, dx, dy] = along(o, S[o.s].t); add("wall", o.s, cx, cy, z0, dx, dy, height); }
+    for (const o of lay.columns) {
+      const sec = S[o.s], As = sec.steel_area_mm2 || 0;
+      if (!As) { add("column", o.s, o.x, o.y, z0, sec.b, sec.h, height, matOf(sec)); continue; }
+      // 매입 철골(SRC) 기둥: 콘크리트 상자는 철골 단면적만큼 줄이고, 같은 단면적의 철골 상자를 가운데 넣는다
+      const k = Math.sqrt(1 - As / (sec.b * sec.h)), a = Math.sqrt(As);
+      add("column", o.s, o.x, o.y, z0, sec.b * k, sec.h * k, height);
+      add("column", o.s, o.x, o.y, z0, a, a, height, { material: sec.material || "Steel" });
+    }
+    for (const o of lay.walls) {
+      // 벽 높이: section.h(mm)가 있으면 그 높이(낮은 담·조적 칸막이 등), 없으면 위층 바닥까지
+      const [cx, cy, dx, dy] = along(o, S[o.s].t);
+      add("wall", o.s, cx, cy, z0, dx, dy, S[o.s].h ? S[o.s].h : height, matOf(S[o.s]));
+    }
   });
   return out;
 }
 
-// 종류별 부피(㎥) — 생성한 IFC의 검산과 계획서 폐기물량 비교에 쓴다
+// 종류별 부피(㎥) — 생성한 IFC의 검산과 계획서 폐기물량 비교에 쓴다.
+// 재료를 지정한 부재(section.material)는 콘크리트에서 빼서 철골(steel)·조적 등(masonry)으로 따로 센다
 export function planVolumes(members) {
-  const v = { column: 0, wall: 0, beam: 0, slab: 0, finish: 0 };
-  for (const b of members) v[b.kind] += b.dx * b.dy * b.dz;
+  const v = { column: 0, wall: 0, beam: 0, slab: 0, finish: 0, steel: 0, masonry: 0 };
+  const other = (mat) => (/steel|강/i.test(mat) ? "steel" : "masonry");
+  for (const b of members) v[b.kind !== "finish" && b.material ? other(b.material) : b.kind] += b.dx * b.dy * b.dz;
   return { ...v, structure: v.column + v.wall + v.beam + v.slab };
 }
 
