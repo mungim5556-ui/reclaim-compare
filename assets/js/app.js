@@ -243,9 +243,12 @@ function derive() {
   const cmp = openSteelFrame || comparisonLimit ? null : compare(q, state.p);
   const planReference = state.source === "ifc" ? state.uploadedPlanScope?.planReference : undefined;
   const finishUnverified = Object.values(q.finishTakeoff ?? {}).some(item => item.unverified);
-  const recommended = !cmp || cmp.unpricedCuts.length || cmp.hasUnpricedDisposal || finishUnverified
+  const recommended = !cmp || cmp.unpricedCuts.length
     ? null : cmp.delta === 0 ? "tie" : cmp.delta < 0 ? "selective" : "crush";
-  return { classified, q, openSteelFrame, comparisonLimit, cmp, recommended, frameAdjustments, finishUnverified, planReference };
+  const basis = cmp && (cmp.unpricedCuts.length || cmp.hasUnpricedDisposal || finishUnverified
+    || planReference || steelDismantling(q).excluded || cmp.crush.transportQuote == null || cmp.selective.transportQuote == null)
+    ? "포함 항목 기준" : null;
+  return { classified, q, openSteelFrame, comparisonLimit, cmp, recommended, basis, frameAdjustments, finishUnverified, planReference };
 }
 
 /* ---------------- 모델 ---------------- */
@@ -265,6 +268,14 @@ async function loadPlan(plan, name, planExample = null) {
 }
 
 let loadVersion = 0;
+function inferIfcUsage(modelUsage, filename) {
+  if (modelUsage) return modelUsage;
+  if (/공동주택|다가구|다세대|연립|아파트|빌라/.test(filename)) return "공동주택";
+  if (/관사|단독/.test(filename)) return "단독주택";
+  if (/학교|교사동|어린이집|상가|업무시설|사무실|사무동|사무용/.test(filename)) return "비주거 RC";
+  return /주택/.test(filename) ? "단독주택" : "공동주택";
+}
+
 async function loadIfc(buffer, name, area, plan = null, conditions = null, planExample = null) {
   const version = ++loadVersion;
   state.busy = "IFC를 읽는 중입니다…"; state.error = ""; state.formError = ""; render();
@@ -294,7 +305,7 @@ async function loadIfc(buffer, name, area, plan = null, conditions = null, planE
       areaConfirmed: Boolean(area || uploadedPlanScope?.area),
       area: area || uploadedPlanScope?.area || Math.round(model.gross.area * 100) / 100,
       floors: b?.floors_above ?? (model.aboveFloors || model.floors) });
-    Object.assign(state, { ...defaultSiteInputs, structure: plan ? "unknown" : defaultSiteInputs.structure, height: b?.height_m, usage: b?.wasteUnit in rates.wasteUnits ? b.wasteUnit : model.usage || (/학교|교사동|어린이집|상가|업무시설|사무실|사무동|사무용/.test(name) ? "비주거 RC" : "공동주택"),
+    Object.assign(state, { ...defaultSiteInputs, structure: plan ? "unknown" : defaultSiteInputs.structure, height: b?.height_m, usage: b?.wasteUnit in rates.wasteUnits ? b.wasteUnit : inferIfcUsage(model.usage, name),
       labor: "quantity", supplement: false, seed: 1, useCalibration: false, calibrationType: "plan" },
       // 계획서의 현장·장비 조건은, 이 기능 이전에 저장된 값(기본값 "보통")보다 우선한다. 이후 사용자가 고친 값은 유지한다.
       conditions?.values, previousInputs,
@@ -880,7 +891,7 @@ function compareTab(d) {
     <section class="kpis">
       <div class="card kpi"><div class="v">${mil(crush.total)}</div><div class="l">일괄 압쇄 순비용 (백만원)${steel.excluded ? " · 철골비 별도" : ""}</div><div class="s">공기 ${num(crush.days)}일</div></div>
       <div class="card kpi"><div class="v">${mil(selective.total)}</div><div class="l">전면 분별해체 순비용 (백만원)${steel.excluded ? " · 철골비 별도" : ""}</div><div class="s">공기 ${num(selective.days)}일 (${cmp.deltaDays >= 0 ? "+" : ""}${num(cmp.deltaDays, 1)}일)</div></div>
-      <div class="card kpi"><div class="v">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${mil(Math.abs(delta))}</div><div class="l">Δ = 분별 − 압쇄 (백만원)</div><div class="s">${d.recommended == null ? "포함 항목 기준 차이" : "음수면 분별이 유리"}</div></div>
+      <div class="card kpi"><div class="v">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${mil(Math.abs(delta))}</div><div class="l">Δ = 분별 − 압쇄 (백만원)</div><div class="s">${d.basis ? "포함 항목 기준 차이" : "음수면 분별이 유리"}</div></div>
       <div class="card kpi"><div class="v">${num(sim.pSelective * 100, 1)}%</div><div class="l">분별 순비용이 낮은 시행 비율</div><div class="s">${num(sim.n)}회 · ${simulationScope}</div></div>
     </section>
     <section class="card"><h2>비용 구성</h2>
@@ -1076,7 +1087,7 @@ function summary(d) {
     finish_takeoff: d.q.finishTakeoff ?? null,
     finish_mixed_reallocated_t: d.q.finishMixedReallocated ?? null,
     finish_routes: { crush: crush.finishRoutes, selective: selective.finishRoutes },
-    structure_calibration_factor: d.q.structureFactor ?? null, unpriced_disposal: { crush: crush.unpricedDisposal, selective: selective.unpricedDisposal }, recommended: d.recommended };
+    structure_calibration_factor: d.q.structureFactor ?? null, unpriced_disposal: { crush: crush.unpricedDisposal, selective: selective.unpricedDisposal }, recommended: d.recommended, basis: d.basis };
 }
 
 function exportElementRows(d) {
