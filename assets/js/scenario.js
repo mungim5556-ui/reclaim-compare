@@ -215,11 +215,22 @@ export function costScenario(q, p, mode) {
   const alRecovered = q.windowMode ? alFrame : alFrame * ((sel ? q.alSel : q.alCrush) ?? 0) / 100;
   const pvcRecovered = q.windowMode ? (q.pvcPrice == null ? 0 : pvcFrame) : pvcFrame * pvcRecoveredRate;
   split.resin = (sel ? Math.max(0, t.resin - pvcFrame) * rates.resin : 0) + pvcRecovered;
-  const mix = mixedWaste({ ...t, glass: t.glass - windowGlass }, split, p, q);
+  if (q.finishTakeoff) {
+    if ((q.boardFee ?? p.fee_board_separate) < 0) split.board = 0;
+    if ((q.tileFee ?? -1) < 0) split.tile = 0;
+  }
+  const finishRoutes = finishMaterialRoutes(q, t, sel, split);
+  const mix = mixedWaste({
+    ...t, glass: t.glass - windowGlass,
+    board: t.board - (finishRoutes?.board.concreteCarryover ?? 0),
+    tile: t.tile - (finishRoutes?.tile.concreteCarryover ?? 0),
+  }, split, p, q);
   const specified = t.concrete * (sel ? q.cleanSel ?? 0 : q.cleanCrush ?? 0) / 100;
   const quoted = q.cleanPrice == null ? 0 : specified;
   if (specified && !quoted) issues.push("콘크리트 별도 반입 견적이 없어 공법별 성상 비율을 적용했습니다.");
   let disposal = add("처리비", "혼합건설폐기물", mix.tons, "t", mix.fee);
+  const finishCarryover = (finishRoutes?.board.concreteCarryover ?? 0) + (finishRoutes?.tile.concreteCarryover ?? 0);
+  if (finishCarryover) disposal += add("처리비", "폐콘크리트 동반 반입 · 마감재", finishCarryover, "t", p.fee_concrete);
   if (windowGlass) disposal += add("처리비", "혼합 반출 창호 유리", windowGlass, "t", p.fee_mixed_unverified);
   for (const grade of concreteGrades(p, sel, q.concreteCase)) {
     disposal += add("처리비", grade.name, (t.concrete - quoted) * grade.share, "t", grade.fee);
@@ -295,7 +306,26 @@ export function costScenario(q, p, mode) {
   // 5. 간접비
   const indirect = add("간접비", "현장 간접비", days, "일", p.indirect_per_day);
 
-  return { mode, labor, equipment, disposal, transport, transportQuote, revenue, indirect, days, unpricedDisposal, equipmentCrewDays, excavatorHours, schedule: sched, crews: crew, mixed: mix, split, sold, embeddedRebar, concreteIntake: t.concrete + embeddedRebar, unsoldMetal, issues, total: labor + equipment + disposal + transport + indirect - revenue, rows: rows.filter((r) => r.qty > 0) };
+  return { mode, labor, equipment, disposal, transport, transportQuote, revenue, indirect, days, unpricedDisposal, equipmentCrewDays, excavatorHours, schedule: sched, crews: crew, mixed: mix, finishRoutes, split, sold, embeddedRebar, concreteIntake: t.concrete + embeddedRebar + finishCarryover, unsoldMetal, issues, total: labor + equipment + disposal + transport + indirect - revenue, rows: rows.filter((r) => r.qty > 0) };
+}
+
+// Unknown pre-removal residue is priced as mixed until concrete co-loading is confirmed.
+export function finishMaterialRoutes(q, t, selective, separated) {
+  if (!q.finishTakeoff) return null;
+  const mixRate = q.finishDemolitionMixedShare ?? 1;
+  const routes = {};
+  for (const key of ["board", "tile"]) {
+    const total = t[key];
+    const separate = separated[key];
+    const removed = Math.max(separate, total * (selective ? 1 : q.finishBaseline[key]));
+    const remaining = Math.max(0, total - removed);
+    const demolitionMixed = remaining * mixRate;
+    routes[key] = {
+      total, separate, preRemovalMixed: removed - separate,
+      demolitionMixed, concreteCarryover: remaining - demolitionMixed,
+    };
+  }
+  return routes;
 }
 
 // 두 공법의 잔재에 같은 판정 규칙을 적용한다. 혼합·기타의 미확인 성상은 견적 대상으로 둔다.

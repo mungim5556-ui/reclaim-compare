@@ -165,6 +165,38 @@ export function quantitiesFromElements(classified, area_m2) {
   return { area_m2, concrete_m3, masonry_m3, finishAreas, rebarFromConcrete: true, rebarModeledTons, t, basis: "IFC" };
 }
 
+// Board and tile use one takeoff for labor and disposal. Reserve estimated mass from
+// untyped mixed waste first, since that stock may already include those finishes.
+export function connectFinishTakeoff(q, raw, rates, params) {
+  q.t = { ...q.t };
+  q.finishTakeoff = {};
+  let estimated = 0;
+  for (const key of ["board", "tile"]) {
+    const tonsPerArea = rates.density[key] * rates.finishThickness[key];
+    const inputWeight = q[key + "Weight"];
+    const measured = inputWeight ?? raw.t[key];
+    const hasWeight = inputWeight != null || measured > 0;
+    const modeledArea = q.finishAreas[key];
+    const unverified = q.finishFallbackDisabled && !hasWeight && modeledArea == null;
+    const area = modeledArea ?? (hasWeight ? measured / tonsPerArea : unverified ? 0 : q.area_m2 * params["int_" + key + "_ratio"]);
+    const tons = hasWeight ? measured : area * tonsPerArea;
+    q.finishAreas[key] = area;
+    q.t[key] = tons;
+    q.finishTakeoff[key] = { area, tons, estimatedWeight: !hasWeight, estimatedArea: modeledArea == null, unverified };
+    if (!hasWeight) estimated += tons;
+  }
+  const untyped = Math.max(0, 1 - (q.mixedMineral ?? 0) - (q.mixedCombustible ?? 0));
+  const reused = Math.min(estimated, q.t.mixed * untyped);
+  if (reused > 0) {
+    const original = q.t.mixed;
+    q.t.mixed -= reused;
+    const scale = q.t.mixed > 0 ? original / q.t.mixed : 0;
+    q.mixedMineral = (q.mixedMineral ?? 0) * scale;
+    q.mixedCombustible = (q.mixedCombustible ?? 0) * scale;
+  }
+  q.finishMixedReallocated = reused;
+}
+
 // 모델에 내장재가 빠져 있으면 표준품셈 원단위로 채운다 (모델 값이 원단위의 절반 미만인 성상만)
 export function supplement(q, usage, rates) {
   const u = rates.wasteUnits[usage], added = {}, t = { ...q.t };

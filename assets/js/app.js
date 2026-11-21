@@ -1,15 +1,15 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=equipment-auto-1";
+import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=ifc-finish-flow-1";
 import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
 import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
-import { classify, quantitiesFromElements, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js";
+import { classify, quantitiesFromElements, connectFinishTakeoff, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js?v=ifc-finish-flow-1";
 import { stackedBars, tornadoChart, histChart, legend, mil, num } from "./charts.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const json = async (f) => (await fetch(`assets/data/${f}`)).json();
 const [rates, paper, validationDoc, kalisCases] = await Promise.all([
-  json("rates.json?v=equipment-auto-1"), json("paper2023_case.json"), json("plan-validation.json"),
+  json("rates.json?v=ifc-finish-flow-1"), json("paper2023_case.json"), json("plan-validation.json"),
   json("plans/kalis/index.json").then(d => d.items ?? []).catch(() => []),
 ]);
 const sampleCases = validationCases(validationDoc);
@@ -75,7 +75,7 @@ const save = () => {
 
 // Exact uploads from the plan validation set. Partial scopes require a scoped IFC.
 const uploadedPlanScopes = {
-  db1384a717b94437e38e4d544447fc94f7dd76d0835ea30d19ba6d3e6aba3073: { area: 23191.57, usage: "비주거 철골" },
+  db1384a717b94437e38e4d544447fc94f7dd76d0835ea30d19ba6d3e6aba3073: { area: 23191.57, usage: "비주거 철골", finishFallbackDisabled: true },
   "5082779404a13f81a1a1cf5a12d0bdb8074e2e43adcdeb8155cbb31a75f6f8a8": { area: 965.04, scope: "above", equipment: "mounted", site: "tight" },
   "1018a28b042f0d3f92c5c9c4e3ca688c7f3dfd68f9d639c000a72c3ea5d2ce16": { partialArea: 350 },
   e3f77ea809a0dcb4b5fe738638fbdf54919a8eb00e14718f1213d7a8d9bdb513: { partialArea: 266.08 },
@@ -124,7 +124,7 @@ function derive() {
     classified = included.map((e) => classify(e, rates, state.overrides, /^(단독|공동)주택$/.test(state.usage) ? "resin" : "aluminum"));
     const raw = quantitiesFromElements(classified, state.area);
     openSteelFrame = isOpenSteelFrame(classified);
-    q = state.supplement && !openSteelFrame ? supplement(raw, state.usage, rates) : { ...raw, added: {} };
+    q = state.supplement && !openSteelFrame ? supplement(raw, state.usage, rates) : { ...raw, t: { ...raw.t }, added: {} };
     q.raw = raw;
     q.supplemented = state.supplement && !openSteelFrame;
   } else q = { ...quantitiesFromArea(state.area, state.usage, rates), added: {} };
@@ -203,6 +203,10 @@ function derive() {
   const manualAreas = { board: state.boardM2, tile: state.tileM2, pvc: state.pvcM2, aluminum: state.alM2 };
   if (state.plan?.rebar_kg_per_m3?.value && state.p.rebar_kg_per_m3 === defaults.rebar_kg_per_m3) q.rebarKgPerM3 = state.plan.rebar_kg_per_m3.value;
   q.finishAreas = { ...q.finishAreas, ...Object.fromEntries(Object.entries(manualAreas).filter(([, value]) => value != null)) };
+  if (state.source === "ifc" && !openSteelFrame && q.labor === "quantity") {
+    q.finishFallbackDisabled = Boolean(state.uploadedPlanScope?.finishFallbackDisabled);
+    connectFinishTakeoff(q, q.raw, rates, state.p);
+  }
   q.panelWeightMissing = state.panelTons == null && classified.some(el => el.parts.some(part => part.stream === "panel" && !(part.tons > 0)));
   q.t.panel = state.panelTons ?? q.t.panel;
   if (state.useCalibration) {
@@ -221,9 +225,10 @@ function derive() {
     || (q.structure === "unknown" && "현장 조건에서 계획서의 구조형식을 확인하세요.")
     || (q.equipment === "mixed" && (!(q.smallHours > 0 && q.largeHours > 0) || q.smallPrice == null || q.largePrice == null || (q.concurrentHours ?? 0) > Math.min(q.smallHours, q.largeHours)) && "두 굴착기의 가동시간과 시간당 단가를 입력하세요. 동시 작업시간은 짧은 쪽 가동시간 이하여야 합니다.");
   const cmp = openSteelFrame || comparisonLimit ? null : compare(q, state.p);
-  const recommended = !cmp || cmp.unpricedCuts.length
+  const finishUnverified = Object.values(q.finishTakeoff ?? {}).some(item => item.unverified);
+  const recommended = !cmp || cmp.unpricedCuts.length || finishUnverified
     ? null : cmp.delta === 0 ? "tie" : cmp.delta < 0 ? "selective" : "crush";
-  return { classified, q, openSteelFrame, comparisonLimit, cmp, recommended, frameAdjustments };
+  return { classified, q, openSteelFrame, comparisonLimit, cmp, recommended, frameAdjustments, finishUnverified };
 }
 
 /* ---------------- 모델 ---------------- */
@@ -598,6 +603,11 @@ function estimateAssumptions(q, p) {
       ? `${num((q.mountedBucket != null ? q.mountedBucket > 0.3 : q.mountedLarge) ? p.crush_m3_per_day : p.crush_m3_per_day_small, 1)}㎥/일${q.mountedBucket == null ? (q.mountedLarge ? " (32톤급, 대형 가정)" : " (프로젝트 기본 소형 장비)") : ` (버킷 ${q.mountedBucket}㎥)`}`
       : "지상 장비 적용"],
   ];
+  if (q.finishTakeoff) {
+    rows.push(["보드·타일 면적 및 중량", Object.entries(q.finishTakeoff).map(([key, item]) =>
+      `${STREAM_LABEL[key]} ${item.unverified ? "확인된 면적·중량 미입력" : `${num(item.area, 1)}㎡${item.estimatedArea ? " (환산·추정)" : ""} / ${num(item.tons, 2)}t${item.estimatedWeight ? " (면적·가정 두께·밀도 추정)" : ""}`}`).join(" · ")]);
+    rows.push(["마감재 반출", `분리 견적 미입력분과 콘크리트 동반량 미확인분은 혼합 반출(프로젝트 가정). 기존 미분류 혼합잔재 중 ${num(q.finishMixedReallocated, 2)}t를 마감재로 재분류.`]);
+  }
   if (office?.estimatePipe || office?.estimateCable) rows.push(["설비 회수 추정", "프로젝트 가정. 미회수분 반출 경로 미확인으로 별도 처리비 미산정. 전선 인발·선별 추가 공수 미산정."]);
   if (!concreteCutModes.some(([mode]) => concreteCut(q, mode).active)) rows.push(["골조 해체 장비", "분별안은 내·외장재 선철거 후 압쇄안과 같은 굴착기·압쇄기를 사용한다고 가정"]);
   for (const [mode, label] of concreteCutModes) {
@@ -772,9 +782,17 @@ function compareTab(d) {
   const steel = steelDismantling(q);
   const boardBreakEven = breakEvenBoardShare(q,p);
   const simulationScope = q.labor === "quantity" ? "보드 60%·타일 100% 공통 선철거율 고정" : "논문 공수 방식 · 선철거율을 변동하지 않음";
-  const rawComparison = q.supplemented ? compare({ ...q, t: { ...q.t, wood: q.raw.t.wood, resin: q.raw.t.resin, mixed: q.raw.t.mixed } }, p) : null;
-  const supplementedComparison = state.plan && !q.supplemented
-    ? compare({ ...q, t: supplement({ ...q.raw, t: q.t }, state.usage, rates).t }, p) : null;
+  const withSupplement = enabled => {
+    const t = { ...q.t, wood: q.raw.t.wood, resin: q.raw.t.resin, mixed: q.raw.t.mixed };
+    const alternative = { ...q, ...Object.fromEntries(
+      ["mixedMineral", "mixedCombustible"].map(key => [key, (state[key] ?? 0) / 100])),
+      t: enabled ? supplement({ ...q, t }, state.usage, rates).t : t,
+    };
+    if (q.finishTakeoff) connectFinishTakeoff(alternative, q.raw, rates, p);
+    return compare(alternative, p);
+  };
+  const rawComparison = q.supplemented ? withSupplement(false) : null;
+  const supplementedComparison = state.plan && !q.supplemented ? withSupplement(true) : null;
   const work = selExtra(q, p);
   const indirect = rates.params.indirect_per_day;
   const crewOnWholeJob = q.equipmentCrewPeriod === "all";
@@ -813,7 +831,7 @@ function compareTab(d) {
       ${state.source === "ifc" ? `<p>${esc(state.fileName)} · 산정 면적 ${num(q.area_m2,2)}㎡ · ${num(q.floors)}층 · 집계 ${num(d.classified.length)}개 부재</p><p class="caption muted">범위 ${q.scope === "above" ? "식별된 지하·기초 제외" : "입력 모델 전체"} · 원단위 ${esc(state.usage)}${state.supplement ? " 적용" : " 보충 꺼짐"} · 용도·현장 조건 미확인 시 기본 가정을 사용합니다. <button class="btn" data-tab="model">입력 근거 확인</button></p>` : ""}
       ${planExampleNotice()}
       ${q.windowMode === "both" ? `<p class="caption muted">${WINDOW_ASSUMPTION}</p>` : ""}
-      <p class="verdict">${steel.excluded ? "철골 절단·인양비 제외 기준 · " : ""}${unpricedCuts.length ? `절단·인양 견적 미입력 · 확인된 비용 차이 (분별 − 압쇄) ${mil(delta, 2)}백만원` : equality ? "두 공법의 순비용이 같습니다." : `<strong>${better}</strong>의 순비용이 ${mil(Math.abs(delta))}백만원 저렴합니다.`}</p>
+      <p class="verdict">${d.finishUnverified ? "마감재 미산정 · 포함 항목 기준 · " : ""}${steel.excluded ? "철골 절단·인양비 제외 기준 · " : ""}${unpricedCuts.length ? `절단·인양 견적 미입력 · 확인된 비용 차이 (분별 − 압쇄) ${mil(delta, 2)}백만원` : equality ? "두 공법의 순비용이 같습니다." : `<strong>${better}</strong>의 순비용이 ${mil(Math.abs(delta))}백만원 저렴합니다.`}</p>
       <p class="caption muted">공수 기준 ${q.labor === "quantity" ? "자재별 작업량" : "논문의 면적당 차이 품"} · 폐콘크리트 성상 압쇄 66 / 26 / 8% · 분별 80 / 18 / 2%${q.transportCrush == null || q.transportSel == null ? " · 운반비 비교 미반영" : ""}</p>
       <details id="finish-settlement"><summary>현장 중량·처리 견적</summary>
         <div class="form-grid">
@@ -1015,6 +1033,9 @@ function summary(d) {
     input_issues: [...new Set([...crush.issues, ...selective.issues])],
     ...(state.planExample ? { plan_example: { source: state.plan.source, scope: state.plan.demolition?.scope, cost_note: state.planExample.costNote, asbestos_cost_excluded: state.plan.hazards?.asbestos === true } } : {}),
     concrete_intake_t: { crush: crush.concreteIntake, selective: selective.concreteIntake }, embedded_rebar_t: { crush: crush.embeddedRebar, selective: selective.embeddedRebar },
+    finish_takeoff: d.q.finishTakeoff ?? null,
+    finish_mixed_reallocated_t: d.q.finishMixedReallocated ?? null,
+    finish_routes: { crush: crush.finishRoutes, selective: selective.finishRoutes },
     structure_calibration_factor: d.q.structureFactor ?? null, unpriced_disposal: { crush: crush.unpricedDisposal, selective: selective.unpricedDisposal }, recommended: d.recommended };
 }
 

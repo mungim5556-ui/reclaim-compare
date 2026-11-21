@@ -390,6 +390,11 @@
     "insulation": 0.03,
     "mixed": 1.5
   },
+  "finishThickness": {
+    "note": "프로젝트 추정 단면 두께 (m). IFC 또는 입력 중량이 없을 때 면적·밀도와 곱한다.",
+    "board": 0.0125,
+    "tile": 0.01
+  },
   "perArea": {
     "note": "창호·문은 실제 두께를 알기 어려워 면적당 무게로 계산한다 (가정)",
     "window_glass": 0.03,
