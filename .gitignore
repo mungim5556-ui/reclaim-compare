@@ -1,7 +1,17 @@
 node_modules
 .DS_Store
 
-# 실제 해체계획서에서 옮긴 데이터는 공개 저장소에 올리지 않는다
+# 비공개 해체계획서 데이터 제외
 assets/data/plans/*
 !assets/data/plans/example.json
+!assets/data/plans/kalis/
+assets/data/plans/kalis/*
+!assets/data/plans/kalis/index.json
+!assets/data/plans/kalis/01-house.json
+!assets/data/plans/kalis/02-shops.json
+!assets/data/plans/kalis/03-multifamily-transfer.json
+!assets/data/plans/kalis/04-apartment.json
+!assets/data/plans/kalis/05-office-above.json
+!assets/data/plans/kalis/06-office-below.json
+!assets/data/plans/kalis/07-factory.json
 scripts/make_private_plan.mjs
