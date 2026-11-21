@@ -8,6 +8,34 @@ const load = (f) => JSON.parse(readFileSync(new URL(`../assets/data/${f}`, impor
 const paper = load("paper2023_case.json"), rates = load("rates.json");
 const p = paramValues(rates), q = quantitiesFromArea(2400, "공동주택", rates), vars = variables(rates);
 
+test("창틀 순중량을 한 번만 정산하고 PVC 무상·유상처리·매각을 구분한다", () => {
+  const frames = { ...q, t: { aluminum: 0.1, resin: 0.2 }, alFrameTons: 0.1, pvcFrameTons: 0.2,
+    alSel: 80, alCrush: 80, pvcSel: 50, pvcCrush: 50, alPrice: 2000 };
+  for (const mode of ["crush", "selective"]) {
+    for (const price of [-100, 0, 100]) {
+      const r = costScenario({ ...frames, pvcPrice: price }, p, mode);
+      assert.equal(r.revenue, 160000 + Math.max(0, price * 100));
+      assert.equal(r.mixed.tons, 0.1);
+      const row = r.rows.find(row => row.item.startsWith("PVC 창틀"));
+      assert.equal(row.qty, 100);
+      assert.equal(Math.abs(row.amount), Math.abs(price * 100));
+    }
+  }
+});
+
+test("공통 선철거·별도 반출·미매각 금속을 두 공법에 정산한다", () => {
+  const input = { ...q, labor: "quantity", finishAreas: {board:5000,tile:400,aluminum:0}, generalFinishPd:0,
+    t:{board:10,tile:20,metal:100}, metalFee:10000, boardSel:50, tileSel:75, boardFee:50000, tileFee:30000 };
+  const separate = compare(input,p);
+  const common = compare({...input, sharedFinish:100},p);
+  assert.ok(common.crush.days > separate.crush.days);
+  assert.ok(Math.abs(common.deltaDays) < 1e-10);
+  assert.equal(common.selective.mixed.tons,10);
+  assert.equal(common.crush.mixed.tons,30);
+  assert.equal(common.selective.rows.find(r=>r.item==="분리 폐타일·도자기").amount,450000);
+  assert.equal(common.hasUnpricedDisposal,false);
+});
+
 test("논문 사례 재현: 표 5·8·9와 Δ = −34,727천원", () => {
   const r = paperMode(paper);
   assert.deepEqual(r.construction, paper.expected.construction);
@@ -44,7 +72,7 @@ test("상시 유도·감시와 굴착기 연동 인원은 투입일수에 맞게
   const whole = costScenario({ ...wide, equipmentCrewPeriod: "all" }, p, "selective");
   const qty = (s, item) => s.rows.find((r) => r.item === item).qty;
   assert.equal(qty(base, "상시 작업유도·감시"), base.days);
-  assert.equal(qty(base, "굴착기 연동 살수·신호"), base.schedule.structure * 4);
+  assert.equal(qty(base, "굴착기 연동 살수·신호"), base.excavatorHours / p.hours_per_day * p.crew_per_excavator);
   assert.equal(qty(whole, "굴착기 연동 살수·신호"), whole.days * 4);
   assert.equal(whole.days, base.days);
   assert.equal(whole.indirect, base.indirect);
@@ -64,13 +92,19 @@ test("일당 간접비 70만원과 50~90만원 탐색 범위가 계산에 들어
   assert.notEqual(simulate(q, p, [v], { n: 50 }).p10, simulate(q, p, [v], { n: 50 }).p90);
 });
 
-test("총액 = 내역 행의 합, 구조체 비용은 두 안이 같다", () => {
+test("총액은 내역의 합이며 분별 보조 장비는 추가 작업에만 계상한다", () => {
   const { crush, selective } = compare(q, p);
   for (const s of [crush, selective]) {
     assert.ok(Math.abs(s.rows.reduce((a, r) => a + r.amount, 0) - s.total) < 1);
     assert.ok(s.total > 0 && s.days > 0);
   }
-  assert.equal(crush.equipment, selective.equipment);
+  const estimated = selective.schedule.selective * p.selective_equipment_hours_per_day * p.selective_equipment_per_h;
+  assert.ok(estimated > 0);
+  assert.ok(Math.abs(selective.equipment - crush.equipment - estimated) < 1e-6);
+  const quoted = compare({ ...q, selectiveEquipmentQuote: 1200000 }, p);
+  assert.ok(Math.abs(quoted.selective.equipment - quoted.crush.equipment - 1200000) < 1e-6);
+  const parallel = compare({ ...q, overlap: 1 }, p);
+  assert.equal(parallel.selective.equipment, selective.equipment);
   assert.ok(selective.labor > crush.labor && selective.disposal < crush.disposal && selective.days > crush.days);
 });
 
@@ -252,4 +286,111 @@ test("조적에는 별도 처리 단가를 적용하고 콘크리트에만 성�
   assert.equal(good.crush.disposal, same.crush.disposal);
   assert.equal(good.selective.rows.find(row => row.item.startsWith("폐벽돌")).amount, 20 * p.fee_concrete);
   assert.equal(good.selective.rows.find(row => row.item === "순수 폐콘크리트").qty, 80);
+});
+
+test("고정 비교는 창틀·유리 공수를 한 번만 반영하고 유리와 기타 금속을 혼합 반출한다", () => {
+  const q = {
+    area_m2: 100, floors: 1, labor: "quantity", fixedComparison: true, windowMode: "both",
+    finishAreas: { board: 0, tile: 0, aluminum: 100 }, windowArea: 100,
+    glassPdPerM2: 0.02, windowGlassTons: 2, alFrameTons: 1,
+    generalFinishPd: 0, t: { aluminum: 1, glass: 2, copper: 1 },
+  };
+  const pFixed = { ...p, sched_interior_min: 0, sched_interior_per_1000m2: 0 };
+  const { crush, selective } = compare(q, pFixed);
+  assert.equal(selExtra(q, pFixed).persons, 0);
+  for (const result of [crush, selective]) {
+    assert.ok(Math.abs(result.schedule.interior * result.crews.interior - 100 * (p.window_al_pd_per_m2 + 0.02)) < 1e-9);
+    assert.equal(result.rows.find(row => row.item === "알루미늄 창틀").amount, -p.price_aluminum);
+    assert.equal(result.rows.find(row => row.item === "혼합 반출 창호 유리").amount, 2 * p.fee_mixed_unverified);
+    assert.equal(result.rows.find(row => row.item === "혼합 반출 미회수 기타 금속").price, p.fee_mixed_unverified);
+  }
+});
+
+test("공통 철골 견적과 회수율은 양쪽에 적용되고 RC 철근 회수율은 따로 적용된다", () => {
+  const input = {
+    area_m2: 120, floors: 1, steelWork: true, structuralSteelTons: 90, fixedComparison: true,
+    t: { metal: 100, concrete: 100 }, rebarFromConcrete: true, rebarModeledTons: 10,
+  };
+  const base = compare(input, p);
+  const common = compare({ ...input, cutCommon: 10000000 }, p);
+  const individual = compare({ ...input, cutCommon: 10000000, cutSel: 12000000 }, p);
+  assert.ok(Math.abs(common.delta - base.delta) < 1e-6);
+  assert.ok(Math.abs(individual.delta - base.delta - 2000000) < 1e-6);
+  assert.ok(Math.abs(base.crush.sold.metal - (90 * p.rec_structural_steel + 10 * p.rec_scrap_crush)) < 1e-8);
+  assert.ok(Math.abs(base.selective.sold.metal - (90 * p.rec_structural_steel + 10 * p.rec_scrap_sel)) < 1e-8);
+  assert.ok(Math.abs(base.crush.unsoldMetal - base.selective.unsoldMetal) < 1e-8);
+});
+
+test("동관과 피복 전선은 확인된 공통 매각량만 기본 비교에 반영한다", () => {
+  const input = { ...q, fixedComparison: true, t: { concrete: 50, copper: 1.5 } };
+  const base = compare(input, p);
+  const shared = compare({ ...input, copperPipeSold: 1, cableCommon: 0.5 }, p);
+  assert.equal(base.crush.sold.copper, 0);
+  assert.equal(base.selective.sold.copper, 0);
+  assert.ok(Math.abs(shared.delta - base.delta) < 1e-6);
+  for (const result of [shared.crush, shared.selective]) {
+    assert.equal(result.sold.copper, 1);
+    assert.equal(result.unsoldMetal, 0.5);
+    assert.equal(result.rows.find(row => row.item === "확인된 동관").amount, -15200000);
+    assert.equal(result.rows.find(row => row.item === "별도 계근 폐전선").amount, -1800000);
+  }
+  const individual = compare({ ...input, cableCommon: 0.5, cableSel: 1, cablePrice: 4000000 }, p);
+  assert.ok(Math.abs(individual.delta - base.delta + 2000000) < 1e-6);
+});
+
+test("사무소 설치량에 위치별 회수율을 적용하고 확인된 매각량을 우선한다", () => {
+  const input = { ...q, area_m2: 2400, officeRecovery: true, fixedComparison: true, t: { concrete: 50 } };
+  const base = compare({ ...input, officeRecovery: false }, p);
+  const assumed = compare(input, p);
+  assert.ok(Math.abs(assumed.delta - base.delta + 1874880) < 0.01);
+  for (const result of [assumed.crush, assumed.selective]) {
+    const pipe = result.rows.find(row => row.item === "동관 (사무소 추정)");
+    const cable = result.rows.find(row => row.item === "피복 전선 (사무소 추정)");
+    assert.ok(Math.abs(pipe.qty - 1334.4) < 1e-9);
+    assert.ok(Math.abs(cable.qty - (result === assumed.crush ? 781.2 : 1302)) < 1e-9);
+    assert.equal(result.concreteIntake, base.crush.concreteIntake);
+  }
+  const confirmed = compare({ ...input, copperPipeSold: 0, cableCommon: 0.5 }, p);
+  for (const result of [confirmed.crush, confirmed.selective]) {
+    assert.equal(result.rows.some(row => row.item.endsWith("(사무소 추정)")), false);
+    assert.equal(result.rows.find(row => row.item === "별도 계근 폐전선").amount, -1800000);
+  }
+  const modeled = compare({ ...input, t: { concrete: 50, copper: 1 } }, p);
+  assert.equal(modeled.crush.rows.some(row => row.item === "동관 (사무소 추정)"), false);
+});
+
+test("현장 설치량은 면적이나 용도 대신 입력값을 쓰고 확인된 매각량을 우선한다", () => {
+  const input = { ...q, area_m2: 16241, fixedComparison: true, t: { concrete: 50, copper: 1 } };
+  const base = compare(input, p);
+  assert.equal(base.crush.rows.some(row => row.item.endsWith("추정)")), false);
+  const installed = compare({ ...input, pipeInstalled: 1, cableInstalled: 0.2 }, p);
+  for (const result of [installed.crush, installed.selective]) {
+    assert.ok(Math.abs(result.rows.find(row => row.item === "동관 (현장 설치량 추정)").qty - 695) < 1e-9);
+    assert.ok(Math.abs(result.unsoldMetal - 0.305) < 1e-9);
+  }
+  assert.equal(installed.crush.rows.find(row => row.item === "피복 전선 (현장 설치량 추정)").qty, 105);
+  assert.equal(installed.selective.rows.find(row => row.item === "피복 전선 (현장 설치량 추정)").qty, 175);
+  const confirmed = compare({ ...input, cableInstalled: 0.2, cableCommon: 0 }, p);
+  assert.equal(confirmed.selective.rows.some(row => row.item === "피복 전선 (현장 설치량 추정)"), false);
+});
+
+test("공법별 콘크리트 절단·인양 견적은 해당 구간의 압쇄 작업을 대체한다", () => {
+  const input = { ...q, equipment: "large", concrete_m3: 100, masonry_m3: 25 };
+  const base = compare(input, p);
+  const cut = { volume: 50, cost: 4500000, days: 3 };
+  const result = compare({ ...input, concreteCut: { selective: cut } }, p);
+  assert.equal(result.crush.total, base.crush.total);
+  assert.ok(Math.abs(result.selective.excavatorHours - base.selective.excavatorHours * 0.6) < 1e-9);
+  assert.ok(Math.abs(result.selective.schedule.structure - (base.selective.schedule.structure * 0.6 + 3)) < 1e-9);
+  const prep = base.selective.schedule.selective * p.selective_equipment_hours_per_day * p.selective_equipment_per_h;
+  assert.ok(Math.abs(result.selective.equipment - ((base.selective.equipment - prep) * 0.6 + prep + cut.cost)) < 1e-6);
+  assert.ok(Math.abs(result.selective.indirect - result.selective.days * p.indirect_per_day) < 1e-6);
+  assert.ok(Math.abs(result.deltaDays - (result.selective.days - result.crush.days)) < 1e-9);
+  assert.equal(result.selective.disposal, base.selective.disposal);
+  const both = compare({ ...input, concreteCut: { crush: cut, selective: cut } }, p);
+  assert.ok(Math.abs(both.selective.equipment - both.crush.equipment - prep) < 1e-6);
+  const full = compare({ ...input, masonry_m3: 0, concreteCut: { crush: { ...cut, volume: 100, cost: 0 } } }, p);
+  assert.equal(full.crush.excavatorHours, 0);
+  assert.equal(full.crush.equipmentCrewDays, 0);
+  assert.equal(full.crush.schedule.structure, 3);
 });

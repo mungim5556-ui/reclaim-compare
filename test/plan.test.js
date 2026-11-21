@@ -65,10 +65,10 @@ test("계획서의 현장·장비 조건: 명시한 값이 우선하고, 없으�
   assert.deepEqual(smallMounted.values, { equipment: "mounted" });
   assert.equal(smallMounted.needsMountedProduction, false);
   const mounted = planConditions({ demolition: { method: "32톤 굴착기 탑재" } }, opts);
-  assert.deepEqual(mounted.values, { equipment: "mounted" });
+  assert.deepEqual(mounted.values, { equipment: "mounted", mountedLarge: true });
   assert.equal(mounted.needsMountedProduction, true);
   assert.deepEqual(planConditions({ demolition: { method: "부재 절단 후 크레인 인양" } }, opts).values, {});
-  assert.deepEqual(planConditions(example, opts).values, {}); // 조건이 없으면 기존 기본값(보통·자동)을 쓴다
+  assert.deepEqual(planConditions(example, opts).values, { structure: "rc", scope: "full" }); // 조건이 없으면 기존 기본값(보통·자동)을 쓴다
   assert.deepEqual(planConditions({ demolition: { site: "wide", method: "장비 탑재" } }, opts).values, { equipment: "mounted", site: "wide" });
 });
 

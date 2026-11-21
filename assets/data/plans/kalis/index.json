@@ -110,7 +110,7 @@
     "structure": "other",
     "scope": "above"
    },
-   "costNote": "지상 타워 범위입니다. SRC 및 철골 절단·인양에 별도 품을 적용하지 않아 공기와 비용은 참고값입니다."
+   "costNote": "지상 타워 범위입니다. 철골 절단·인양 견적이 없으면 비용 차이에서 제외합니다. 구조체 해체 공기는 참고값입니다."
   },
   {
    "file": "plans/kalis/06-office-below.json",

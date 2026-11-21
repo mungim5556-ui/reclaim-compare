@@ -60,7 +60,7 @@ test("부재별 결과(CSV)의 처리비·수익 합계가 엔진의 철근 분�
   const res = elementResults(classified, p, p.fee_mixed_unverified, { concreteCase: "same" })[0];
   const rebar = 10 * p.rebar_kg_per_m3 / 1000;
   const fee = concreteGrades(p, true, "same").reduce((s, g) => s + g.share * g.fee, 0);
-  near(res.disposal, (24 - rebar) * fee, 1e-6);
+  near(res.disposal, (24 - rebar) * fee + rebar * (1 - p.rec_scrap_sel) * p.fee_concrete, 1e-6);
   near(res.revenue, rebar * p.rec_scrap_sel * p.price_scrap, 1e-6);
 });
 
@@ -146,7 +146,9 @@ test("보드·타일 철거 비용만 있고 효과가 0이면 그 금액과 상
   assert.ok(r.cost > 0 && r.sharePoints > 0);
   // 효과를 넣으면(콘크리트 배분 선택, 보드 분리+견적) 경고하지 않는다. 논문 방식도 해당 없음.
   assert.equal(unbenefitedFinishLabor({ ...base, concreteCase: "good" }, p), null);
-  assert.equal(unbenefitedFinishLabor(base, { ...p, rec_sel_board: 0.8, fee_board_separate: 50000 }), null);
+  const boardQuote = { ...p, rec_sel_board: 0.8, fee_board_separate: 50000 };
+  assert.ok(unbenefitedFinishLabor({ ...base, t: { ...base.t, board: 0 } }, boardQuote));
+  assert.equal(unbenefitedFinishLabor({ ...base, t: { ...base.t, board: 10 } }, boardQuote), null);
   assert.equal(unbenefitedFinishLabor({ ...base, labor: "paper" }, p), null);
 });
 
@@ -259,4 +261,20 @@ test("공법별 운반 견적은 각 순비용에 한 번만 반영하고 0원�
   assert.equal(free.partialTransport, false);
   near(free.delta, base.delta + 800000);
   assert.equal(quoted.crush.rows.find(row => row.item === "가설 설치 비계공").price, 284440);
+});
+
+test("미회수 매립 철근만 건설폐재류 처리비에 한 번 반영한다", () => {
+  const q = {area_m2: 1000, concrete_m3:1329, rebarKgPerM3:100, rebarFromConcrete:true, t:{concrete:3190}};
+  for (const [mode, residue] of [["crush",10.632],["selective",6.645]]) {
+    const r = costScenario(q,p,mode);
+    const row = r.rows.find(x => x.item.includes("동반 반입"));
+    near(row.qty,residue);
+    near(row.amount,residue*p.fee_concrete);
+    near(r.concreteIntake+r.sold.metal,q.t.concrete);
+    assert.equal(r.unsoldMetal,0);
+    assert.equal(r.unpricedDisposal.length,0);
+    const separate = costScenario({...q, t:{...q.t,metal:50}},p,mode);
+    near(separate.embeddedRebar,residue);
+    assert.ok(separate.unsoldMetal>0);
+  }
 });

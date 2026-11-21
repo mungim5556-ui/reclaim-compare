@@ -125,11 +125,28 @@ export function planToIfc(plan, opts) {
 export function planConditions(plan, { sites = {}, equipments = {} } = {}) {
   const d = plan?.demolition || {}, out = {}, notes = [];
   const number = (x) => Number.isFinite(x) && x >= 0 ? x : undefined;
+  const structure = plan.building?.structure?.trim();
+  if (structure) {
+    if (/철골|steel/i.test(structure)) out.structure = "steel";
+    else out.structure = /^(rc$|철근콘크리트)/i.test(structure) && !/조적|복합/.test(structure) ? "rc" : "other";
+  }
+  const scope = d.scope?.trim() || "";
+  if (["above", "partial", "full", "unknown"].includes(scope)) out.scope = scope;
+  else if (/^지상/.test(scope)) out.scope = "above";
+  else if (/^전체|^전부/.test(scope)) out.scope = "full";
+  else if (/일부|부분|^지하/.test(scope)) out.scope = "partial";
+  if (out.scope || out.structure) notes.push("계획서 구조형식·해체 범위 반영");
   const method = d.method || "";
   const explicit = Object.hasOwn(equipments, d.equipment) && d.equipment !== "auto";
-  if (explicit) { out.equipment = d.equipment; notes.push("장비 방식(계획서 데이터)"); }
+  if (explicit && (d.equipment !== "mounted" || /탑재/.test(method))) { out.equipment = d.equipment; notes.push("장비 방식(계획서 데이터)"); }
   else if (/탑재/.test(method)) { out.equipment = "mounted"; notes.push("해체공법에 장비 탑재가 명시됨"); }
   else if (/크레인/.test(method)) notes.push("크레인 사용이 기록되어 있습니다. 인양 문구만으로 탑재 여부를 판단하지 않습니다.");
+  if (out.equipment === "mounted") {
+    const bucketText = method.match(/버[킷켓]\s*([\d.]+)\s*(?:㎥|m³|m3)/i);
+    const bucket = number(d.bucket_m3 ?? (bucketText ? Number(bucketText[1]) : undefined));
+    if (bucket > 0) out.mountedBucket = bucket;
+    else if (/32톤/.test(method)) out.mountedLarge = true;
+  }
   const needsMountedProduction = out.equipment === "mounted" && !explicit && !/소형/.test(method);
   if (Object.hasOwn(sites, d.site)) { out.site = d.site; notes.push("대지 조건(계획서 값)"); }
   if (number(d.crane_days) != null) out.craneDays = number(d.crane_days);

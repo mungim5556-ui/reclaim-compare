@@ -77,6 +77,18 @@ function materialLayers(o, W, out = [], depth = 0) {
   return out;
 }
 
+// 닫힌 바닥 솔리드의 위·아래 면을 수평 투영한다. 수직 옆면의 투영 면적은 0이다.
+export function horizontalFootprint(positions, index) {
+  let twiceArea = 0;
+  for (let i = 0; i < index.length; i += 3) {
+    const a = index[i] * 3, b = index[i + 1] * 3, c = index[i + 2] * 3;
+    const ux = positions[b] - positions[a], uz = positions[b + 2] - positions[a + 2];
+    const vx = positions[c] - positions[a], vz = positions[c + 2] - positions[a + 2];
+    twiceArea += Math.abs(ux * vz - uz * vx);
+  }
+  return twiceArea / 4;
+}
+
 // 창·문 면적(㎡): 속성(폭×높이)을 쓰되, 형상 겉넓이의 절반보다 터무니없이 크면(단위 오류) 형상 값을 쓴다
 export function openingArea(w, h, surface) {
   const geo = surface / 2;
@@ -94,7 +106,7 @@ export function grossArea(elements, size, floors) {
   // 기초 슬래브(매트)는 1층 바닥 슬래브가 따로 없을 때만 1층 바닥으로 센다
   if (!slabs.some((e) => e.floor === 1)) slabs.push(...elements.filter((e) => e.category === "footing" && e.predefined === "BASESLAB"));
   if (!slabs.length) slabs = elements.filter(isSlab);
-  const area = slabs.reduce((s, e) => s + (e.area || 0), 0);
+  const area = slabs.reduce((s, e) => s + (e.floorFootprint ?? e.area ?? 0), 0);
   return area > 0 ? { area, basis: "slab" } : { area: size[0] * size[2] * floors, basis: "bbox" };
 }
 
@@ -149,12 +161,29 @@ export function volumeCheck(elements) {
     medianDiff: diffs.length ? diffs[Math.floor(diffs.length / 2)] : null, over10: diffs.filter((d) => d > 0.1).length };
 }
 
+// IFC4에서는 사각 중공 단면의 Position 생략이 가능하다. 일부 파서 버전은 명시한 원점을 요구한다.
+export function normalizeHollowProfilePositions(bytes) {
+  let source;
+  try { source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { return bytes; }
+  const omitted = /(^[\t ]*#\d+\s*=\s*IFCRECTANGLEHOLLOWPROFILEDEF\s*\(\s*\.AREA\.\s*,\s*(?:\$|'(?:[^']|'')*')\s*,\s*)\$(?=\s*,)/gim;
+  if (!omitted.test(source)) return bytes;
+  const insertion = source.toUpperCase().lastIndexOf("ENDSEC;");
+  if (insertion < 0) return bytes;
+  let maxId = 0;
+  for (const match of source.matchAll(/^\s*#(\d+)\s*=/gm)) maxId = Math.max(maxId, Number(match[1]));
+  const point = maxId + 1, placement = maxId + 2;
+  const extra = `#${point}=IFCCARTESIANPOINT((0.,0.));\n#${placement}=IFCAXIS2PLACEMENT2D(#${point},$);\n`;
+  const data = source.slice(0, insertion).replace(omitted, (_, prefix) => prefix + "#" + placement);
+  return new TextEncoder().encode(data + extra + source.slice(insertion));
+}
+
 export async function parseIfc(buffer) {
   const W = await import(CDN + "web-ifc-api.js");
   const api = new W.IfcAPI();
   api.SetWasmPath(CDN, true);
   await api.Init(undefined, true);
-  const model = api.OpenModel(new Uint8Array(buffer));
+  const model = api.OpenModel(normalizeHollowProfilePositions(new Uint8Array(buffer)));
   try {
     const catOf = new Map(Object.entries(CATEGORY).filter(([k]) => W[k] != null).map(([k, c]) => [W[k], c]));
     const ids = (t) => { const v = api.GetLineIDsWithType(model, t); return Array.from({ length: v.size() }, (_, i) => v.get(i)); };
@@ -257,8 +286,19 @@ export async function parseIfc(buffer) {
       const category = catOf.get(api.GetLineType(model, mesh.expressID));
       if (!category) continue;
       const a = acc.get(mesh.expressID) || { category, volume: 0, surface: 0 };
+      if (category === "stair" || category === "plate") {
+        a.bounds ??= { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+        for (let i = 0; i < mesh.positions.length; i++) {
+          const axis = i % 3;
+          a.bounds.min[axis] = Math.min(a.bounds.min[axis], mesh.positions[i]);
+          a.bounds.max[axis] = Math.max(a.bounds.max[axis], mesh.positions[i]);
+        }
+      }
       a.volume += Math.abs(meshVolume(mesh.positions, mesh.index));
       a.surface += meshSurface(mesh.positions, mesh.index);
+      if (category === "slab" || category === "footing" || category === "part") {
+        a.floorFootprint = (a.floorFootprint ?? 0) + horizontalFootprint(mesh.positions, mesh.index);
+      }
       acc.set(mesh.expressID, a);
     }
     // 커튼월·계단·지붕처럼 하위 부재(패널·멀리언·계단참·지붕 슬래브)로 나뉜 집합 부재는
@@ -289,13 +329,13 @@ export async function parseIfc(buffer) {
       const w = (Number(line.OverallWidth?.value) || 0) * scale, h = (Number(line.OverallHeight?.value) || 0) * scale;
       return {
         expressID: id, globalId: line.GlobalId?.value || "", tag: line.Tag?.value || "", name: line.Name?.value || "",
-        category, predefined: pre || "",
+        category, bounds: a.bounds, predefined: pre || "",
         basement: storeys[(floorOf.get(id) ?? 0) - 1]?.basement ?? false,
         roofLevel: storeys[(floorOf.get(id) ?? 0) - 1]?.roof ?? false,
         floor: category === "footing" ? 0 : floorOf.get(id) || 1,
         ...(({ volume, source, diff }) => ({ volume, volumeSource: source, meshVolume: a.volume, volumeDiff: diff }))(pickVolume(a.volume, volumes.get(id)?.m3)),
         weightTons: weights.get(id)?.tons,
-        area: openingArea(w, h, a.surface),
+        area: openingArea(w, h, a.surface), floorFootprint: a.floorFootprint > 0 ? a.floorFootprint : undefined,
         layers: matOf.get(id) || matOf.get(typeOf.get(id)) || [],
       };
     });

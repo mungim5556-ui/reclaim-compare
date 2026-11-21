@@ -44,12 +44,12 @@ export function impliedSteel(el) {
   return el.volume > 0 && Number.isFinite(density) && density >= 6.5 && density <= 9;
 }
 
-export const groupKey =(el) => `${el.category}|${el.layers.map((l) => l.name).join("+") || "(재료 없음)"}`;
+export const groupKey =(el) => `${el.category}${el.category === "plate" && /계단|디딤판|\btreads?\b|\bstairs?\b/i.test(el.name) ? "·stair" : ""}|${el.layers.map((l) => l.name).join("+") || "(재료 없음)"}`;
 
 // 부재 하나 → { parts: [{cls, stream, m3, tons}], tons, stream(가장 무거운 성상), guessed }
-export function classify(el, rates, overrides = {}) {
+export function classify(el, rates, overrides = {}, unknownFrame = "aluminum") {
   const D = rates.density, parts = [];
-  let guessed = false;
+  let guessed = false, guessedConcreteTread = false;
   const push = (cls, m3, tons) => parts.push({ cls, stream: streamOf(cls), m3, tons: tons ?? m3 * (D[cls] ?? D[streamOf(cls)] ?? 0) });
 
   // 일부 IFC는 유리와 프레임을 하나의 판형 창호로 내보낸다.
@@ -64,10 +64,11 @@ export function classify(el, rates, overrides = {}) {
     const knownFrame = el.layers.map((l) => (materialClass(l.name) || materialClass(l.category))).find((c) => c && c !== "glass");
     const frame = combinedFrame
       ? (/\bpvc\b|염화비닐|vinyl/i.test(combinedFrame.name) ? "resin" : "aluminum")
-      : knownFrame || "aluminum";
+      : knownFrame || unknownFrame;
     guessed = !knownFrame || el.category !== "window";
     push("glass", 0, el.area * rates.perArea.window_glass);
     push(frame, 0, el.area * rates.perArea.window_frame);
+    parts[1].windowAssembly = true;
   } else if (el.category === "door") {
     const cls = el.layers.map((l) => (materialClass(l.name) || materialClass(l.category))).find(Boolean);
     if (!cls) guessed = true;
@@ -88,7 +89,8 @@ export function classify(el, rates, overrides = {}) {
       if (!cls) {
         // 재료가 없으면 ① 수량표 중량/형상 부피로 본 밀도, ② 부재 이름(예: "System Panel: Glazed") 순으로 추정한다.
         // 재료 없는 강재 보를 콘크리트(2.4t/㎥)로, 유리 패널을 강재(7.85t/㎥)로 세는 것을 막는다.
-        cls = (impliedSteel(el) ? "metal" : null) || materialClass(el.name) || FALLBACK[el.category];
+        guessedConcreteTread = el.category === "plate" && !el.layers.some(l => l.name || l.category) && /계단|디딤판|\btreads?\b|\bstairs?\b/i.test(el.name);
+        cls = guessedConcreteTread ? "concrete" : (impliedSteel(el) ? "metal" : null) || materialClass(el.name) || FALLBACK[el.category];
       }
       push(cls, el.volume);
     }
@@ -116,19 +118,23 @@ export function classify(el, rates, overrides = {}) {
       push(over, areaBased ? 0 : el.volume, areaWeight);
     }
     guessed = false;
+    guessedConcreteTread = false;
   }
   if (parts.length === 1 && parts[0].stream === "panel" && Number.isFinite(el.weightTons) && el.weightTons > 0) {
     parts[0].tons = el.weightTons;
   }
   const tons = parts.reduce((s, p) => s + p.tons, 0);
   const stream = [...parts].sort((a, b) => b.tons - a.tons)[0]?.stream || "mixed";
-  return { ...el, parts, tons, stream, guessed };
+  return { ...el, parts, tons, stream, guessed, guessedConcreteTread };
 }
 
 // 벽·바닥·지붕이 모델링되지 않은 개방형 철골은 건축물 RC 견적식의 적용 대상에서 뺀다.
 export function isOpenSteelFrame(classified) {
   const above = classified.filter(el => !el.basement && el.category !== "footing" && el.stream !== EXCLUDED);
-  return !above.some(el => ["wall", "slab", "roof"].includes(el.category))
+  const canopy = above.some(el => ["roof", "covering"].includes(el.category) && /차양막|막구조|canopy/i.test(el.name ?? ""));
+  const enclosed = above.some(el => ["wall", "slab", "roof"].includes(el.category)
+    && !(canopy && el.category !== "slab" && ["panel", "resin"].includes(el.stream)));
+  return !enclosed
     && above.some(el => el.category === "column" && el.stream === "metal")
     && above.some(el => ["beam", "plate"].includes(el.category) && el.stream === "metal");
 }
@@ -159,6 +165,38 @@ export function quantitiesFromElements(classified, area_m2) {
   return { area_m2, concrete_m3, masonry_m3, finishAreas, rebarFromConcrete: true, rebarModeledTons, t, basis: "IFC" };
 }
 
+// Board and tile use one takeoff for labor and disposal. Reserve estimated mass from
+// untyped mixed waste first, since that stock may already include those finishes.
+export function connectFinishTakeoff(q, raw, rates, params) {
+  q.t = { ...q.t };
+  q.finishTakeoff = {};
+  let estimated = 0;
+  for (const key of ["board", "tile"]) {
+    const tonsPerArea = rates.density[key] * rates.finishThickness[key];
+    const inputWeight = q[key + "Weight"];
+    const measured = inputWeight ?? raw.t[key];
+    const hasWeight = inputWeight != null || measured > 0;
+    const modeledArea = q.finishAreas[key];
+    const unverified = q.finishFallbackDisabled && !hasWeight && modeledArea == null;
+    const area = modeledArea ?? (hasWeight ? measured / tonsPerArea : unverified ? 0 : q.area_m2 * params["int_" + key + "_ratio"]);
+    const tons = hasWeight ? measured : area * tonsPerArea;
+    q.finishAreas[key] = area;
+    q.t[key] = tons;
+    q.finishTakeoff[key] = { area, tons, estimatedWeight: !hasWeight, estimatedArea: modeledArea == null, unverified };
+    if (!hasWeight) estimated += tons;
+  }
+  const untyped = Math.max(0, 1 - (q.mixedMineral ?? 0) - (q.mixedCombustible ?? 0));
+  const reused = Math.min(estimated, q.t.mixed * untyped);
+  if (reused > 0) {
+    const original = q.t.mixed;
+    q.t.mixed -= reused;
+    const scale = q.t.mixed > 0 ? original / q.t.mixed : 0;
+    q.mixedMineral = (q.mixedMineral ?? 0) * scale;
+    q.mixedCombustible = (q.mixedCombustible ?? 0) * scale;
+  }
+  q.finishMixedReallocated = reused;
+}
+
 // 모델에 내장재가 빠져 있으면 표준품셈 원단위로 채운다 (모델 값이 원단위의 절반 미만인 성상만)
 export function supplement(q, usage, rates) {
   const u = rates.wasteUnits[usage], added = {}, t = { ...q.t };
@@ -181,6 +219,10 @@ export function checkAgainstUnits(q, usage, rates, rebarKgPerM3 = rates.params.r
 
 // 부재별 결과 (전면 분별 시나리오 기준) — CSV와 Revit 되쓰기에 쓴다
 // mixedFee: 건물 전체로 판정한 분별 후 혼합건설폐기물 단가 (scenario.js의 mixedWaste().fee)
+export function isStructuralSteelPart(el, part) {
+  return part.stream === "metal" && (["beam", "column"].includes(el.category) || el.category === "plate" && !el.guessed);
+}
+
 export function elementResults(classified, p, mixedFee = p.fee_mixed_unverified, q = {}) {
   const cost = (net) => Math.max(0, -net), gain = (net) => Math.max(0, net);
   const split = separation(p);
@@ -196,7 +238,7 @@ export function elementResults(classified, p, mixedFee = p.fee_mixed_unverified,
     : s === "panel" ? Math.max(0, p.fee_panel)
     : s === "mixed" || s === "tile" ? mixedFee : 0;
   const price = (s) => s === "metal" ? p.rec_scrap_sel * p.price_scrap
-    : s === "copper" ? (p.rec_copper_sel ?? p.rec_nonferrous_sel) * p.price_copper
+    : s === "copper" ? (q.fixedComparison ? 0 : (p.rec_copper_sel ?? p.rec_nonferrous_sel) * p.price_copper)
     : s === "aluminum" ? p.rec_nonferrous_sel * p.price_aluminum
     : s === "wood" ? split.wood * gain(p.net_wood)
     : s === "resin" ? split.resin * gain(p.net_resin) : 0;
@@ -211,9 +253,30 @@ export function elementResults(classified, p, mixedFee = p.fee_mixed_unverified,
     globalId: el.globalId, tag: el.tag, category: el.category, floor: el.floor, stream: el.stream,
     method: el.stream === EXCLUDED ? "제외" : SEPARATED.has(el.stream) ? "분별" : "압쇄",
     tons: el.tons,
-    disposal: el.parts.reduce((s, x) => s + (x.tons - rebarOf(el, x)) * fee(x.stream), 0),
-    revenue: el.parts.reduce((s, x) => s + x.tons * price(x.stream) + rebarOf(el, x) * sold * price("metal"), 0),
+    disposal: el.parts.reduce((s, x) => s + (x.tons - rebarOf(el, x)) * (q.windowMode && x.stream === "glass" && (el.category === "window" || el.parts.some(part => part.windowAssembly)) ? p.fee_mixed_unverified : fee(x.stream))
+      + (q.fixedComparison && x.stream === "metal" && el.category !== "rebar" ? x.tons * (1 - (q.steelWork && isStructuralSteelPart(el, x) ? p.rec_structural_steel ?? p.rec_scrap_sel : p.rec_scrap_sel)) * p.fee_mixed_unverified : 0)
+      + rebarOf(el, x) * (1 - p.rec_scrap_sel) * p.fee_concrete, 0),
+    revenue: el.parts.reduce((s, x) => s + x.tons * ((el.category === "window" || x.windowAssembly) && x.stream === "aluminum" && q.windowMode
+      ? q.alPrice == null ? p.price_aluminum : q.alPrice * 1000
+      : q.steelWork && isStructuralSteelPart(el, x) ? (p.rec_structural_steel ?? p.rec_scrap_sel) * p.price_scrap : price(x.stream)) + rebarOf(el, x) * sold * price("metal"), 0),
   }));
+}
+
+export function reconcileElementResults(results, appliedTons, scenario) {
+  const exported = results.reduce((sum, row) => {
+    if (row.stream !== EXCLUDED) sum.weightUnits += Math.round(Number(row.tons.toFixed(4)) * 10000);
+    sum.disposal += Math.round(row.disposal);
+    sum.revenue += Math.round(row.revenue);
+    return sum;
+  }, { weightUnits: 0, disposal: 0, revenue: 0 });
+  const weightUnits = Math.round(appliedTons * 10000) - exported.weightUnits;
+  const disposal = Math.round(scenario.disposal) - exported.disposal;
+  const revenue = Math.round(scenario.revenue) - exported.revenue;
+  if (weightUnits === 0 && disposal === 0 && revenue === 0) return results;
+  return [...results, {
+    globalId: "", tag: "", category: "adjustment", floor: "", stream: "",
+    method: "합계 정산", tons: weightUnits / 10000, disposal, revenue,
+  }];
 }
 
 export function toCsv(results) {
