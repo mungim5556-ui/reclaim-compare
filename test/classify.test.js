@@ -63,3 +63,13 @@ test("물량 합산, 원단위 보충, 부재별 결과 CSV", () => {
   assert.equal(csv.length, 4);
   assert.ok(csv[0].startsWith("GlobalId,ElementId") && csv[1].startsWith("G,42,slab,1,concrete,압쇄,240.0000"));
 });
+
+test("계획서 모델: 폐콘크리트·조적을 계획서 예정량 또는 원단위까지 채우고 구조체 부피는 그대로 둔다", () => {
+  const q = { area_m2: 1000, concrete_m3: 300, t: { concrete: 720, wood: 0, resin: 0, mixed: 0 } };
+  const byPlan = supplement(q, "비주거 RC", rates, { plan: { check: { waste_concrete_t: 1200 } } });
+  near(byPlan.t.concrete, 1200); near(byPlan.added.concrete, 480); near(byPlan.concrete_m3, 300);
+  const byUnit = supplement(q, "비주거 RC", rates, { plan: {} });
+  near(byUnit.t.concrete, rates.wasteUnits["비주거 RC"].concrete * 1000);
+  near(supplement(q, "비주거 RC", rates, { plan: { supplement_concrete: false } }).t.concrete, 720);
+  near(supplement(q, "비주거 RC", rates).t.concrete, 720); // Revit IFC는 건드리지 않는다
+});

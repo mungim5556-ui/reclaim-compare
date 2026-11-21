@@ -74,7 +74,7 @@ function derive() {
   if (state.source === "ifc") {
     classified = state.elements.map((e) => classify(e, rates, state.overrides));
     const raw = quantitiesFromElements(classified, state.area);
-    q = state.supplement ? supplement(raw, state.usage, rates) : { ...raw, added: {} };
+    q = state.supplement ? supplement(raw, state.usage, rates, { plan: state.plan }) : { ...raw, added: {} };
     q.raw = raw;
   } else q = { ...quantitiesFromArea(state.area, state.usage, rates), added: {} };
   Object.assign(q, projectInputs());
@@ -148,7 +148,7 @@ function modelTab(d) {
         <div class="field"><label>용도·구조 (원단위 기준)</label><select class="select" data-set="usage">${Object.keys(rates.wasteUnits).map((u) => `<option ${u === state.usage ? "selected" : ""}>${u}</option>`).join("")}</select></div>
         <div class="field"><label>대지 조건 (장비 구성)</label><select class="select" data-set="site">${Object.entries(SITES).map(([k, v]) => `<option value="${k}" ${k === state.site ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         <div class="field"><label>분별 추가 품 계산</label><select class="select" data-set="labor">${Object.entries(LABOR_METHODS).map(([k, v]) => `<option value="${k}" ${k === state.labor ? "selected" : ""}>${v}</option>`).join("")}</select></div>
-        ${state.source === "ifc" ? `<div class="field"><label>모델에 없는 내장재</label><label class="row"><input type="checkbox" data-set="supplement" ${state.supplement ? "checked" : ""}> 원단위로 보충한다</label></div>` : ""}
+        ${state.source === "ifc" ? `<div class="field"><label>모델에 없는 내장재</label><label class="row"><input type="checkbox" data-set="supplement" ${state.supplement ? "checked" : ""}> 원단위로 보충한다${state.plan ? " (계획서 모델은 조적·비구조 폐콘크리트 포함)" : ""}</label></div>` : ""}
       </div>
       <details id="site-details" style="margin-top:14px"><summary>현장 조건·자재 면적 입력</summary>
         <div class="form-grid" style="margin-top:12px">
@@ -374,7 +374,7 @@ function compareTab(d) {
       <p>구조체 공정일수는 두 공법 모두 <strong>${num(crush.schedule.structure, 1)}일</strong>입니다. 굴착기 가동시간은 두 공법 모두 <strong>${num(crush.excavatorHours, 1)} 장비·시간</strong>입니다 (콘크리트 부피 ÷ 일일 해체량 × 하루 작업시간).</p>
       <p class="caption muted">배치 인원은 천마산 p.38, 정선 p.65, 노량진 p.104의 계획을 참고했습니다. 구조체 기간에만 굴착기 연동 인원을 배치하고 관리자를 직접노무에서 제외하는 것은 팀 가정입니다. 천마산은 살수와 작업유도를 각각 전체 21일로 계획했습니다. 모델의 현장 조건에서 전체 작업일 배치도 비교할 수 있습니다.</p>
       <p class="caption muted" style="margin-top:8px">장비 방식은 ${EQUIPMENT[equipmentMode(q)]}입니다. 분별 추가 작업 ${num(selective.schedule.selective, 1)}일 중 병행률 ${num(q.overlap * 100, 1)}%를 반영해 전체 공기가 ${num(selective.schedule.extension, 1)}일 늘어납니다. 보드·타일 외 선별 공수는 확인된 별도 항목이 없습니다.</p>
-      ${paperAlt ? `<p class="caption muted">표 3·4 기재를 달리 해석해 보통인부 추가 품을 0.325로 두면, Δ는 ${mil(paperAlt.delta, 2)}백만원, 공기 차이는 ${num(paperAlt.deltaDays, 1)}일입니다. 이 해석의 출처 확인이 필요합니다.</p>` : ""}
+      ${paperAlt ? `<p class="badge badge-danger" style="display:block;white-space:normal;margin-top:8px"><strong>결론이 바뀔 수 있음:</strong> 표 3·4 기재를 달리 해석해 보통인부 추가 품을 0.325로 두면, Δ는 ${mil(paperAlt.delta, 2)}백만원, 공기 차이는 ${num(paperAlt.deltaDays, 1)}일입니다. 이 해석의 출처 확인이 필요합니다.</p>` : ""}
     </section>
     <div class="grid-2">
       <section class="card"><h2>손익분기</h2>${be ? `<ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px">${be}</ul>` : `<p class="muted">범위 안에서 결과를 뒤집는 변수가 없습니다.</p>`}

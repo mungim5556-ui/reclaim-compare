@@ -104,11 +104,18 @@ export function quantitiesFromElements(classified, area_m2) {
 }
 
 // 모델에 내장재가 빠져 있으면 표준품셈 원단위로 채운다 (모델 값이 원단위의 절반 미만인 성상만)
-export function supplement(q, usage, rates) {
+export function supplement(q, usage, rates, { plan = null } = {}) {
   const u = rates.wasteUnits[usage], added = {}, t = { ...q.t };
   for (const s of ["wood", "resin", "mixed"]) {
     const expected = u[s] * q.area_m2;
     if (t[s] < expected * 0.5) { added[s] = expected - t[s]; t[s] = expected; }
+  }
+  // 해체계획서 구조도면으로 만든 모델에는 조적벽·계단·마감 등 비구조 콘크리트·조적이 빠져 있다.
+  // 계획서의 폐콘크리트 예정량이 있으면 그 값까지, 없으면 원단위까지 폐콘크리트·조적을 채운다.
+  // (굴착기 가동시간에 쓰는 구조체 부피 concrete_m3는 바꾸지 않는다. plan.supplement_concrete === false면 채우지 않는다)
+  if (plan && plan.supplement_concrete !== false) {
+    const target = plan.check?.waste_concrete_t ?? u.concrete * q.area_m2;
+    if (t.concrete < target) { added.concrete = target - t.concrete; t.concrete = target; }
   }
   return { ...q, t, added };
 }
