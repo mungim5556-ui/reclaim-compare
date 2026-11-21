@@ -73,6 +73,14 @@ const save = () => {
   catch { /* 저장 불가여도 계산은 된다 */ }
 };
 
+// Exact uploads from the plan validation set. Partial scopes require a scoped IFC.
+const uploadedPlanScopes = {
+  db1384a717b94437e38e4d544447fc94f7dd76d0835ea30d19ba6d3e6aba3073: { area: 23191.57, usage: "비주거 철골" },
+  "5082779404a13f81a1a1cf5a12d0bdb8074e2e43adcdeb8155cbb31a75f6f8a8": { area: 965.04, scope: "above", equipment: "mounted", site: "tight" },
+  "1018a28b042f0d3f92c5c9c4e3ca688c7f3dfd68f9d639c000a72c3ea5d2ce16": { partialArea: 350 },
+  e3f77ea809a0dcb4b5fe738638fbdf54919a8eb00e14718f1213d7a8d9bdb513: { partialArea: 266.08 },
+};
+
 async function sha256(buffer) {
   const digest = await crypto.subtle.digest("SHA-256", buffer);
   return Array.from(new Uint8Array(digest), n => n.toString(16).padStart(2, "0")).join("");
@@ -202,7 +210,13 @@ function derive() {
     if (cal.ready) q.structureFactor = cal.factor;
   }
   const incompleteCut = concreteCutModes.find(([mode]) => !concreteCut(q, mode).ready);
-  const comparisonLimit = frameLimit || state.planExample?.comparisonLimit
+  const partialArea = state.source === "ifc" ? state.uploadedPlanScope?.partialArea : undefined;
+  const areaLimit = partialArea
+    ? `계획서의 부분 해체 범위는 ${num(partialArea, 2)}㎡입니다. 대상 부재만 포함한 IFC를 올려 주세요.`
+    : state.source === "ifc" && state.model.gross.basis === "bbox" && !state.areaConfirmed
+      ? "IFC의 외곽 치수로 면적을 추정했습니다. 모델 탭에서 해체 대상 면적을 확인해 입력하세요."
+      : "";
+  const comparisonLimit = frameLimit || state.planExample?.comparisonLimit || areaLimit
     || (incompleteCut && `${incompleteCut[1]}안 콘크리트 절단·인양 부피는 전체 콘크리트 부피 이하로 입력하고, 작업일수를 함께 입력하세요.`)
     || (q.structure === "unknown" && "현장 조건에서 계획서의 구조형식을 확인하세요.")
     || (q.equipment === "mixed" && (!(q.smallHours > 0 && q.largeHours > 0) || q.smallPrice == null || q.largePrice == null || (q.concurrentHours ?? 0) > Math.min(q.smallHours, q.largeHours)) && "두 굴착기의 가동시간과 시간당 단가를 입력하세요. 동시 작업시간은 짧은 쪽 가동시간 이하여야 합니다.");
@@ -237,7 +251,9 @@ async function loadIfc(buffer, name, area, plan = null, conditions = null, planE
     const model = await parseIfc(buffer);
     if (!model.elements.some(e => e.category !== "other" && e.volume > 0)) throw new Error("비용 산정에 사용할 건축 부재 물량을 찾지 못했습니다.");
     const b = plan?.building;
-    const fileKey = plan ? "rc.ifc." + await sha256(buffer) + JSON.stringify(plan.building) : null;
+    const digest = globalThis.crypto?.subtle ? await sha256(buffer) : null;
+    const uploadedPlanScope = !plan && digest ? uploadedPlanScopes[digest] : undefined;
+    const fileKey = plan && digest ? "rc.ifc." + digest + JSON.stringify(plan.building) : null;
     if (version !== loadVersion) return;
     let previous;
     if (fileKey) {
@@ -252,12 +268,15 @@ async function loadIfc(buffer, name, area, plan = null, conditions = null, planE
     Object.assign(state, { fileKey, plan, planExample, source: "ifc", model, elements: model.elements, fileName: name, overrides: {}, caseId: "",
       p: plan ? personalRates : { ...defaults },
       ...Object.fromEntries(caseFields.map((key) => [key, undefined])),
-      area: area || Math.round(model.gross.area * 100) / 100,
+      uploadedPlanScope,
+      areaConfirmed: Boolean(area || uploadedPlanScope?.area),
+      area: area || uploadedPlanScope?.area || Math.round(model.gross.area * 100) / 100,
       floors: b?.floors_above ?? (model.aboveFloors || model.floors) });
     Object.assign(state, { ...defaultSiteInputs, structure: plan ? "unknown" : defaultSiteInputs.structure, height: b?.height_m, usage: b?.wasteUnit in rates.wasteUnits ? b.wasteUnit : model.usage || "공동주택",
       labor: "quantity", supplement: false, seed: 1, useCalibration: false, calibrationType: "plan" },
       // 계획서의 현장·장비 조건은, 이 기능 이전에 저장된 값(기본값 "보통")보다 우선한다. 이후 사용자가 고친 값은 유지한다.
-      conditions?.values, previousInputs);
+      conditions?.values, previousInputs,
+      Object.fromEntries(["usage", "scope", "equipment", "site"].filter(key => uploadedPlanScope?.[key] != null).map(key => [key, uploadedPlanScope[key]])));
     if (conditions && !previous?.planApplied) Object.assign(state, conditions.values);
     if (previous && !previous.planConditionsRevision) {
       for (const key of ["structure", "scope"]) {
@@ -301,7 +320,7 @@ function modelTab(d) {
         ${state.source ? `<p class="caption muted">현재: ${state.source === "ifc" ? `IFC · ${esc(state.fileName)} · 부재 ${num(state.elements.length)}개 · ${state.model.floors}개 층` : "면적 × 표준품셈 원단위 (간이 계산)"}</p>` : ""}
       </div>
       <div class="form-grid" style="margin-top:16px">
-        <div class="field"><label>해체 대상 면적 (㎡)</label><input class="input" type="number" min="1" step="any" data-set="area" value="${state.area}"></div>
+        <div class="field"><label>해체 대상 면적 (㎡)</label><input class="input" type="number" min="1" step="any" data-set="area" value="${state.area}">${state.source === "ifc" && state.model.gross.basis === "bbox" && !state.areaConfirmed ? '<button class="btn" data-act="confirm-area">현재 면적 확인</button>' : ""}</div>
         <div class="field"><label>지상 층수 (공기 계산용)</label><input class="input" type="number" min="1" step="1" data-set="floors" value="${state.floors}"></div>
         <div class="field"><label>용도·구조 (원단위 기준)</label><select class="select" data-set="usage">${Object.keys(rates.wasteUnits).map((u) => `<option ${u === state.usage ? "selected" : ""}>${u}</option>`).join("")}</select></div>
         <div class="field"><label>대지 조건 (장비 구성)</label><select class="select" data-set="site">${Object.entries(SITES).map(([k, v]) => `<option value="${k}" ${k === state.site ? "selected" : ""}>${v}</option>`).join("")}</select></div>
@@ -1069,6 +1088,11 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.tab) { state.tab = t.dataset.tab; if (state.tab === "compare") state.colorMode = "method"; window.scrollTo(0, 0); return render(); }
   if (t.dataset.color) { state.colorMode = t.dataset.color; return render(); }
   const act = t.dataset.act, d = derive();
+  if (act === "confirm-area" && state.source === "ifc") {
+    state.areaConfirmed = true;
+    sim = null;
+    return render();
+  }
   if (act === "sample") return loadIfc(await (await fetch("assets/data/sample.ifc")).arrayBuffer(), "sample.ifc (예시 5층 공동주택)");
   if (act === "plan-sample") return loadPlan(await json("plans/example.json"), "계획서 예시");
   if (act === "area" || act === "seodaesin") {
@@ -1148,6 +1172,7 @@ document.addEventListener("change", async (e) => {
   else if (t.dataset.set === "calibrationType") state.calibrationType = t.value;
   else if (t.dataset.set === "scope" && state.model) {
     state.scope = t.value;
+    state.areaConfirmed = false;
     state.area = Math.round((state.scope === "above" ? state.model.aboveArea : state.model.gross.area) * 100) / 100;
   }
   else if (["concreteCase", "usage", "site", "labor", "equipment", "scope", "structure", "scaffold", "equipmentCrewPeriod"].includes(t.dataset.set)) state[t.dataset.set] = t.value;
@@ -1159,7 +1184,13 @@ document.addEventListener("change", async (e) => {
       state.formError = "혼합·기타 중 건설폐재류와 가연물의 합은 100% 이하여야 합니다.";
     } else state[key] = v;
   }
-  else if (t.dataset.set) { const v = Number(t.value); if (v > 0 && Number.isFinite(v)) state[t.dataset.set] = t.dataset.set === "floors" ? Math.max(1, Math.round(v)) : v; }
+  else if (t.dataset.set) {
+    const v = Number(t.value);
+    if (v > 0 && Number.isFinite(v)) {
+      state[t.dataset.set] = t.dataset.set === "floors" ? Math.max(1, Math.round(v)) : v;
+      if (t.dataset.set === "area") state.areaConfirmed = true;
+    }
+  }
   else if (t.dataset.override != null) { if (t.value) state.overrides[t.dataset.override] = t.value; else delete state.overrides[t.dataset.override]; }
   else return;
   sim = null; save(); render();
