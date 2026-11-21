@@ -117,9 +117,29 @@ export const CONCRETE_CASES = {
   good: { label: "분별 선별 양호 가정", shares: [0.80, 0.18, 0.02] },
 };
 
-export function concreteGrades(p, selective, concreteCase = DEFAULT_CONCRETE_CASE) {
-  const scenario = selective ? CONCRETE_CASES[concreteCase] ?? CONCRETE_CASES[DEFAULT_CONCRETE_CASE] : CONCRETE_CASES.same;
-  const shares = scenario.shares;
+// Benchmark is the 04 apartment IFC under the phase-2 finish takeoff.
+const REFERENCE_FINISH_RATIO = 57.21156 / 7968.550875802546;
+
+export function concreteGradeLink(q, p) {
+  if (!q.finishTakeoff) return { status: "no-takeoff" };
+  if (!(q.t.concrete > 0)) return { status: "no-concrete" };
+  if (Object.values(q.finishTakeoff).some(item => item.unverified)) return { status: "missing-finish" };
+  const removed = selective => {
+    const split = finishSeparations(q, q.t, p, selective);
+    const routes = finishMaterialRoutes(q, q.t, selective, split);
+    return Object.values(routes).reduce((total, route) => total + route.separate + route.preRemovalMixed, 0);
+  };
+  const extraTons = Math.max(0, removed(true) - removed(false));
+  const ratio = extraTons / q.t.concrete;
+  return { status: "linked", extraTons, ratio, factor: Math.min(1, ratio / REFERENCE_FINISH_RATIO) };
+}
+
+export function concreteGrades(p, selective, concreteCase = DEFAULT_CONCRETE_CASE, q) {
+  const baseline = CONCRETE_CASES.same.shares;
+  const link = selective && concreteCase === "linked" && q ? concreteGradeLink(q, p) : null;
+  const shares = link
+    ? baseline.map((share, i) => share + (CONCRETE_CASES.good.shares[i] - share) * (link.factor ?? (link.status === "no-concrete" ? 0 : 1)))
+    : (selective ? CONCRETE_CASES[concreteCase]?.shares ?? baseline : baseline);
   return [
     { name: "순수 폐콘크리트", share: shares[0], fee: p.fee_pure_concrete },
     { name: "건설폐재류 (가연물 제거)", share: shares[1], fee: p.fee_concrete },
@@ -215,10 +235,7 @@ export function costScenario(q, p, mode) {
   const alRecovered = q.windowMode ? alFrame : alFrame * ((sel ? q.alSel : q.alCrush) ?? 0) / 100;
   const pvcRecovered = q.windowMode ? (q.pvcPrice == null ? 0 : pvcFrame) : pvcFrame * pvcRecoveredRate;
   split.resin = (sel ? Math.max(0, t.resin - pvcFrame) * rates.resin : 0) + pvcRecovered;
-  if (q.finishTakeoff) {
-    if ((q.boardFee ?? p.fee_board_separate) < 0) split.board = 0;
-    if ((q.tileFee ?? -1) < 0) split.tile = 0;
-  }
+  if (q.finishTakeoff) Object.assign(split, finishSeparations(q, t, p, sel));
   const finishRoutes = finishMaterialRoutes(q, t, sel, split);
   const mix = mixedWaste({
     ...t, glass: t.glass - windowGlass,
@@ -232,7 +249,7 @@ export function costScenario(q, p, mode) {
   const finishCarryover = (finishRoutes?.board.concreteCarryover ?? 0) + (finishRoutes?.tile.concreteCarryover ?? 0);
   if (finishCarryover) disposal += add("처리비", "폐콘크리트 동반 반입 · 마감재", finishCarryover, "t", p.fee_concrete);
   if (windowGlass) disposal += add("처리비", "혼합 반출 창호 유리", windowGlass, "t", p.fee_mixed_unverified);
-  for (const grade of concreteGrades(p, sel, q.concreteCase)) {
+  for (const grade of concreteGrades(p, sel, q.concreteCase, q)) {
     disposal += add("처리비", grade.name, (t.concrete - quoted) * grade.share, "t", grade.fee);
   }
   if (t.masonry > 0) disposal += add("처리비", "폐벽돌·조적 (건설폐재류)", t.masonry, "t", p.fee_concrete);
@@ -307,6 +324,16 @@ export function costScenario(q, p, mode) {
   const indirect = add("간접비", "현장 간접비", days, "일", p.indirect_per_day);
 
   return { mode, labor, equipment, disposal, transport, transportQuote, revenue, indirect, days, unpricedDisposal, equipmentCrewDays, excavatorHours, schedule: sched, crews: crew, mixed: mix, finishRoutes, split, sold, embeddedRebar, concreteIntake: t.concrete + embeddedRebar + finishCarryover, unsoldMetal, issues, total: labor + equipment + disposal + transport + indirect - revenue, rows: rows.filter((r) => r.qty > 0) };
+}
+
+function finishSeparations(q, t, p, selective) {
+  const boardRate = selective ? q.boardSel ?? (p.rec_sel_board ?? 0) * 100 : q.boardCrush ?? 0;
+  const tileRate = (selective ? q.tileSel : q.tileCrush) ?? 0;
+  const fraction = rate => Math.max(0, Math.min(1, rate / 100));
+  return {
+    board: (q.boardFee ?? p.fee_board_separate) >= 0 ? t.board * fraction(boardRate) : 0,
+    tile: (q.tileFee ?? -1) >= 0 ? t.tile * fraction(tileRate) : 0,
+  };
 }
 
 // Unknown pre-removal residue is priced as mixed until concrete co-loading is confirmed.
@@ -476,7 +503,9 @@ export function unbenefitedFinishLabor(q, p) {
   if (q.labor !== "quantity") return null;
   const boardSeparated = (q.boardSel ?? (p.rec_sel_board ?? 0) * 100) > (q.boardCrush ?? 0) && q.t?.board > 0 && (q.boardFee ?? p.fee_board_separate) >= 0;
   const tileSeparated = (q.tileSel ?? 0) > (q.tileCrush ?? 0) && q.t?.tile > 0 && q.tileFee >= 0;
-  const concreteBenefit = (q.concreteCase ?? DEFAULT_CONCRETE_CASE) !== "same" || (q.cleanSel ?? 0) > 0 && q.cleanPrice != null;
+  const concreteBenefit = (q.concreteCase === "linked"
+    ? concreteGradeLink(q, p).factor > 0
+    : (q.concreteCase ?? DEFAULT_CONCRETE_CASE) !== "same") || (q.cleanSel ?? 0) > 0 && q.cleanPrice != null;
   if (boardSeparated || tileSeparated || concreteBenefit) return null;
   const without = { ...q, finishAreas: { ...q.finishAreas, board: 0, tile: 0 } };
   const cost = compare(q, p).delta - compare(without, p).delta;

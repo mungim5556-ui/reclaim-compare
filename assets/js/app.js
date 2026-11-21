@@ -1,7 +1,7 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=ifc-finish-flow-1";
+import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, concreteGradeLink, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=ifc-grade-link-1";
 import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
-import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
+import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js?v=ifc-grade-link-1";
 import { classify, quantitiesFromElements, connectFinishTakeoff, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js?v=ifc-finish-flow-1";
 import { stackedBars, tornadoChart, histChart, legend, mil, num } from "./charts.js";
 
@@ -206,6 +206,7 @@ function derive() {
   if (state.source === "ifc" && !openSteelFrame && q.labor === "quantity") {
     q.finishFallbackDisabled = Boolean(state.uploadedPlanScope?.finishFallbackDisabled);
     connectFinishTakeoff(q, q.raw, rates, state.p);
+    q.concreteCase = "linked";
   }
   q.panelWeightMissing = state.panelTons == null && classified.some(el => el.parts.some(part => part.stream === "panel" && !(part.tons > 0)));
   q.t.panel = state.panelTons ?? q.t.panel;
@@ -587,16 +588,27 @@ function openSteelNotice(d) {
 }
 
 
+function concreteGradeLabel(q, p, selective) {
+  return concreteGrades(p, selective, q.concreteCase, q)
+    .map(grade => num(grade.share * 100, 1)).join(" / ");
+}
+
+function concreteGradeBasis(q, p) {
+  if (q.concreteCase !== "linked") return "고정 성상 가정";
+  const link = concreteGradeLink(q, p);
+  if (link.status === "missing-finish") return "마감 물량 미확인 · 기존 고정 성상 가정 적용";
+  if (link.status === "no-concrete") return "적용할 폐콘크리트 물량 없음";
+  return `04 아파트 보정 모델 · 현장 자료 미검증 · 추가 선철거 ${num(link.extraTons, 2)}t · 기준 대비 개선 ${num(link.factor * 100, 1)}%`;
+}
+
 function estimateAssumptions(q, p) {
   const office = officeSalvage(q, p);
-  const concreteShares = selective => concreteGrades(p, selective, q.concreteCase)
-    .map(grade => num(grade.share * 100)).join(" / ");
   const rows = [
     ["미회수 철근", `폐콘크리트와 함께 반출 · ${num(p.fee_concrete)}원/t`],
     ["동관 매각", `${num((office?.estimatePipe ? office.pipeKg * office.pipeRate / 1000 : q.copperPipeSold) ?? 0, 3)}t ${office?.estimatePipe ? "(추정) " : ""}· 양 공법 공통 · ${num(p.price_copper_pipe)}원/kg. IFC 구리 집계 ${num(q.copperModeledTons ?? 0, 3)}t`],
     ["폐전선 매각", `압쇄 ${num((office?.estimateCable ? office.cableKg * office.cableCrushRate / 1000 : q.cableCrush ?? q.cableCommon) ?? 0, 3)}t · 분별 ${num((office?.estimateCable ? office.cableKg * office.cableSelectiveRate / 1000 : q.cableSel ?? q.cableCommon) ?? 0, 3)}t ${office?.estimateCable ? "(추정)" : ""} · 피복 포함 ${num(q.cablePrice == null ? p.price_waste_cable : q.cablePrice / 1000)}원/kg`],
     ["미회수 기타 금속", `혼합 반출 · ${num(p.fee_mixed_unverified)}원/t`],
-    ["폐콘크리트 성상 배분", `프로젝트 가정 · 압쇄 ${concreteShares(false)}% · 분별 ${concreteShares(true)}% (순수 / 가연물 제거 / 가연물 5% 이하). 별도 반입 견적 적용분은 이 배분에서 제외.`],
+    ["폐콘크리트 성상 배분", `${concreteGradeBasis(q, p)} · 압쇄 ${concreteGradeLabel(q, p, false)}% · 분별 ${concreteGradeLabel(q, p, true)}% (순수 / 가연물 제거 / 가연물 5% 이하). 별도 반입 견적 적용분은 이 배분에서 제외.`],
     ["보드·타일 공통 선철거", q.labor === "quantity" ? "보드 60%, 타일 100%" : "논문 차이 품 적용"],
     ["운반비", q.transportCrush == null || q.transportSel == null ? "두 공법 0원 가정" : "현장 견적 적용"],
     ["탑재 장비", equipmentMode(q) === "mounted"
@@ -832,7 +844,7 @@ function compareTab(d) {
       ${planExampleNotice()}
       ${q.windowMode === "both" ? `<p class="caption muted">${WINDOW_ASSUMPTION}</p>` : ""}
       <p class="verdict">${d.finishUnverified ? "마감재 미산정 · 포함 항목 기준 · " : ""}${steel.excluded ? "철골 절단·인양비 제외 기준 · " : ""}${unpricedCuts.length ? `절단·인양 견적 미입력 · 확인된 비용 차이 (분별 − 압쇄) ${mil(delta, 2)}백만원` : equality ? "두 공법의 순비용이 같습니다." : `<strong>${better}</strong>의 순비용이 ${mil(Math.abs(delta))}백만원 저렴합니다.`}</p>
-      <p class="caption muted">공수 기준 ${q.labor === "quantity" ? "자재별 작업량" : "논문의 면적당 차이 품"} · 폐콘크리트 성상 압쇄 66 / 26 / 8% · 분별 80 / 18 / 2%${q.transportCrush == null || q.transportSel == null ? " · 운반비 비교 미반영" : ""}</p>
+      <p class="caption muted">공수 기준 ${q.labor === "quantity" ? "자재별 작업량" : "논문의 면적당 차이 품"} · 폐콘크리트 성상 압쇄 ${concreteGradeLabel(q, p, false)}% · 분별 ${concreteGradeLabel(q, p, true)}% · ${concreteGradeBasis(q, p)}${q.transportCrush == null || q.transportSel == null ? " · 운반비 비교 미반영" : ""}</p>
       <details id="finish-settlement"><summary>현장 중량·처리 견적</summary>
         <div class="form-grid">
         ${[["board","보드"],["tile","타일"]].map(([key,label]) => `<fieldset><legend>${label} · 현재 ${num(q.t[key],2)}t</legend>
@@ -868,7 +880,7 @@ function compareTab(d) {
     <section class="card"><h2>산정 기준</h2>
       <details><summary>폐콘크리트 성상 가정을 바꾸면?</summary>
         <p class="caption muted">분별안의 성상만 바꿔 계산한 가정입니다. 비용 차이의 기준은 분별 − 압쇄입니다.</p>
-        <ul>${["same", "standard"].map(key => {
+        <ul>${["same", "standard", "good"].map(key => {
           const alternative = compare({ ...q, concreteCase: key }, p);
           const shares = CONCRETE_CASES[key].shares.map(value => num(value * 100)).join(" / ");
           return `<li>분별 ${shares}% · 비용 차이 ${mil(alternative.delta, 2)}백만원</li>`;
@@ -1033,6 +1045,11 @@ function summary(d) {
     input_issues: [...new Set([...crush.issues, ...selective.issues])],
     ...(state.planExample ? { plan_example: { source: state.plan.source, scope: state.plan.demolition?.scope, cost_note: state.planExample.costNote, asbestos_cost_excluded: state.plan.hazards?.asbestos === true } } : {}),
     concrete_intake_t: { crush: crush.concreteIntake, selective: selective.concreteIntake }, embedded_rebar_t: { crush: crush.embeddedRebar, selective: selective.embeddedRebar },
+    concrete_grade_link: d.q.concreteCase === "linked" ? concreteGradeLink(d.q, state.p) : null,
+    concrete_grade_shares: {
+      crush: concreteGrades(state.p, false, d.q.concreteCase, d.q).map(grade => grade.share),
+      selective: concreteGrades(state.p, true, d.q.concreteCase, d.q).map(grade => grade.share),
+    },
     finish_takeoff: d.q.finishTakeoff ?? null,
     finish_mixed_reallocated_t: d.q.finishMixedReallocated ?? null,
     finish_routes: { crush: crush.finishRoutes, selective: selective.finishRoutes },
