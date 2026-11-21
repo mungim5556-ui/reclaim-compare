@@ -187,6 +187,9 @@ export function costScenario(q, p, mode) {
     if (q.craneDays == null) issues.push(`크레인 사용 일수가 없어 탑재 구간 공정 ${craneDays.toFixed(1)}일을 적용했습니다.`);
   }
 
+  if (sel && q.selectiveEquipmentQuote != null) {
+    equipment += add("장비비", "분별 선철거·선별 추가 장비", 1, "식", q.selectiveEquipmentQuote);
+  }
   if (cut.active && cut.ready && !cut.quoteMissing) equipment += add("장비비", "콘크리트 절단·인양 도급비 (장비·인력 포함)", 1, "식", cut.cost);
 
   if (q.steelWork || q.structure === "steel") {
