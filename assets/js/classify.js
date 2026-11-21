@@ -1,5 +1,5 @@
 // IFC 부재(종류·재료 층·부피·면적) → 폐기물 성상별 톤수. DOM·web-ifc를 쓰지 않는다.
-import { SEPARATED, STREAMS, EXCLUDED } from "./scenario.js";
+import { SEPARATED, STREAMS, EXCLUDED, separation } from "./scenario.js";
 
 export const CATEGORY_LABEL = {
   wall: "벽", slab: "슬래브", beam: "보", column: "기둥", footing: "기초", stair: "계단", roof: "지붕",
@@ -9,6 +9,7 @@ export const CATEGORY_LABEL = {
 // 재료 이름 키워드 → 재료 분류. 위에서부터 먼저 맞는 것을 쓴다.
 // ponytail: 이름 키워드 방식이라 오분류가 있을 수 있다. 화면에서 그룹별로 성상을 고칠 수 있게 했다.
 const MATERIALS = [
+  ["panel", "panel", /sandwich[ -]?panel|샌드위치[ -]?(?:패널|판넬)/i],
   ["insulation", "resin", /insulation|단열|\beps\b|\bxps\b|styro|urethane|우레탄|스티로폼/i],
   ["board", "board", /gypsum|석고|plasterboard|drywall|보드|board|텍스/i],
   ["glass", "glass", /glass|유리|glazing/i],
@@ -18,7 +19,8 @@ const MATERIALS = [
   ["wood", "wood", /wood|timber|plywood|목재|합판|마루|lumber|mdf|oak|pine|각재/i],
   ["metal", "metal", /steel|강재|철골|iron|metal|\bSS\d|\bSM\d|SHN|H-?beam|stud|galvan/i],
   ["masonry", "concrete", /brick|block|masonry|조적|벽돌|블록|cmu|stone|석재/i],
-  ["mixed", "mixed", /tile|타일|ceramic|도기|plaster|회반죽|paint|도장/i],
+  ["tile", "tile", /tile|타일|ceramic|도기/i],
+  ["mixed", "mixed", /plaster|회반죽|paint|도장/i],
   ["concrete", "concrete", /concrete|콘크리트|\brc\b|cast|mortar|모르타르|screed|cement|시멘트/i],
 ];
 // 재료 이름으로 알 수 없을 때 부재 종류로 정하는 기본값
@@ -39,11 +41,13 @@ export const groupKey = (el) => `${el.category}|${el.layers.map((l) => l.name).j
 export function classify(el, rates, overrides = {}) {
   const D = rates.density, parts = [];
   let guessed = false;
-  const push = (cls, m3, tons) => parts.push({ cls, stream: streamOf(cls), m3, tons: tons ?? m3 * D[cls] });
+  const push = (cls, m3, tons) => parts.push({ cls, stream: streamOf(cls), m3, tons: tons ?? m3 * (D[cls] ?? D[streamOf(cls)] ?? 0) });
 
   if (el.category === "window") {
     // 유리 + 창틀: 두께를 알기 어려워 면적당 무게로 계산
-    const frame = el.layers.map((l) => materialClass(l.name)).find((c) => c && c !== "glass") || "aluminum";
+    const knownFrame = el.layers.map((l) => materialClass(l.name)).find((c) => c && c !== "glass");
+    const frame = knownFrame || "aluminum";
+    guessed = !knownFrame;
     push("glass", 0, el.area * rates.perArea.window_glass);
     push(frame, 0, el.area * rates.perArea.window_frame);
   } else if (el.category === "door") {
@@ -57,12 +61,12 @@ export function classify(el, rates, overrides = {}) {
       // 복합 부재: 층 두께 비율로 부피를 나눈다
       for (const l of named) {
         if (!l.thickness) continue;
-        if (!l.cls) guessed = true;
+        if (!l.cls || l.cls === "panel") guessed = true;
         push(l.cls || FALLBACK[el.category], (el.volume * l.thickness) / thick);
       }
     } else {
       const cls = named.find((l) => l.cls)?.cls;
-      if (!cls) guessed = true;
+      if (!cls || cls === "panel") guessed = true;
       push(cls || FALLBACK[el.category], el.volume);
     }
   }
@@ -80,13 +84,23 @@ export function classify(el, rates, overrides = {}) {
 // 분류한 부재 목록 → 엔진 물량. 철근은 모델에 없으므로 엔진이 콘크리트 부피에서 추정한다.
 export function quantitiesFromElements(classified, area_m2) {
   const t = Object.fromEntries(STREAMS.map((s) => [s, 0]));
+  const areaTypes = { board: "board", tile: "tile", aluminum: "aluminum", pvc: "resin" };
+  const finishAreas = {};
+  for (const [key, cls] of Object.entries(areaTypes)) {
+    const frame = key === "aluminum" || key === "pvc";
+    const matching = classified.filter((el) => !el.guessed && el.area > 0
+      && (key !== "pvc" || el.layers.some((layer) => /pvc|vinyl|염화비닐/i.test(layer.name)))
+      && (!frame || el.category === "window")
+      && el.parts.some((p) => p.cls === cls && p.stream === streamOf(cls)));
+    if (matching.length) finishAreas[key] = matching.reduce((sum, el) => sum + el.area, 0);
+  }
   let concrete_m3 = 0;
   for (const el of classified) for (const p of el.parts) {
     if (!(p.stream in t)) continue; // 제외한 부재
     t[p.stream] += p.tons;
     if (p.cls === "concrete" && STRUCTURAL.has(el.category)) concrete_m3 += p.m3;
   }
-  return { area_m2, concrete_m3, rebarFromConcrete: true, t, basis: "IFC" };
+  return { area_m2, concrete_m3, finishAreas, rebarFromConcrete: true, t, basis: "IFC" };
 }
 
 // 모델에 내장재가 빠져 있으면 표준품셈 원단위로 채운다 (모델 값이 원단위의 절반 미만인 성상만)
@@ -110,17 +124,21 @@ export function checkAgainstUnits(q, usage, rates) {
 
 // 부재별 결과 (전면 분별 시나리오 기준) — CSV와 Revit 되쓰기에 쓴다
 // mixedFee: 건물 전체로 판정한 분별 후 혼합건설폐기물 단가 (scenario.js의 mixedWaste().fee)
-export function elementResults(classified, p, mixedFee = p.fee_mixed_selective) {
+export function elementResults(classified, p, mixedFee = p.fee_mixed_unverified) {
   const cost = (net) => Math.max(0, -net), gain = (net) => Math.max(0, net);
-  const fee = (s) => s === "concrete" ? p.fee_concrete_selective
-    : s === "wood" ? p.rec_sel * cost(p.net_wood) + (1 - p.rec_sel) * mixedFee
-    : s === "resin" ? p.rec_sel * cost(p.net_resin) + (1 - p.rec_sel) * mixedFee
-    : s === "glass" || s === "board" || s === "mixed" ? mixedFee : 0;
+  const split = separation(p);
+  const fee = (s) => s === "concrete" ? p.fee_concrete
+    : s === "wood" ? split.wood * cost(p.net_wood) + (1 - split.wood) * mixedFee
+    : s === "resin" ? split.resin * cost(p.net_resin) + (1 - split.resin) * mixedFee
+    : s === "glass" ? split.glass * Math.max(0, p.fee_glass_separate) + (1 - split.glass) * mixedFee
+    : s === "board" ? split.board * Math.max(0, p.fee_board_separate) + (1 - split.board) * mixedFee
+    : s === "panel" ? Math.max(0, p.fee_panel)
+    : s === "mixed" || s === "tile" ? mixedFee : 0;
   const price = (s) => s === "metal" ? p.rec_scrap_sel * p.price_scrap
-    : s === "copper" ? p.rec_nonferrous_sel * p.price_copper
+    : s === "copper" ? (p.rec_copper_sel ?? p.rec_nonferrous_sel) * p.price_copper
     : s === "aluminum" ? p.rec_nonferrous_sel * p.price_aluminum
-    : s === "wood" ? p.rec_sel * gain(p.net_wood)
-    : s === "resin" ? p.rec_sel * gain(p.net_resin) : 0;
+    : s === "wood" ? split.wood * gain(p.net_wood)
+    : s === "resin" ? split.resin * gain(p.net_resin) : 0;
   return classified.map((el) => ({
     globalId: el.globalId, tag: el.tag, category: el.category, floor: el.floor, stream: el.stream,
     method: el.stream === EXCLUDED ? "제외" : SEPARATED.has(el.stream) ? "분별" : "압쇄",

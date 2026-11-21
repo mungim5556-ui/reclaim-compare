@@ -1,5 +1,6 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { compare, paramValues, quantitiesFromArea, paperMode, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, smallSite, selExtra } from "./scenario.js";
+import { compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra } from "./scenario.js";
+import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
 import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
 import { classify, quantitiesFromElements, supplement, checkAgainstUnits, elementResults, toCsv, groupKey, CATEGORY_LABEL } from "./classify.js";
 import { stackedBars, tornadoChart, histChart, legend, mil, num } from "./charts.js";
@@ -7,23 +8,63 @@ import { stackedBars, tornadoChart, histChart, legend, mil, num } from "./charts
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const json = async (f) => (await fetch(`assets/data/${f}`)).json();
-const [rates, paper] = await Promise.all([json("rates.json"), json("paper2023_case.json")]);
+const [rates, paper, validationDoc] = await Promise.all([json("rates.json"), json("paper2023_case.json"), json("plan-validation.json")]);
+const sampleCases = validationCases(validationDoc);
 const defaults = paramValues(rates);
 
-const TABS = [["model", "모델"], ["rates", "단가"], ["compare", "비교"], ["export", "내보내기"]];
-const STREAM_COLOR = { concrete: "#9c9084", metal: "#4a6fa5", wood: "#b0783c", resin: "#c05a9a", glass: "#58b8d8", board: "#d9b23a", mixed: "#6f747d", copper: "#c8642a", aluminum: "#b8c4d0", excluded: "#d6d3ce" };
+const TABS = [["model", "모델"], ["rates", "단가"], ["compare", "비교"], ["validation", "검증·보정"], ["export", "내보내기"]];
+const STREAM_COLOR = { concrete: "#9c9084", metal: "#4a6fa5", wood: "#b0783c", resin: "#c05a9a", glass: "#58b8d8", tile: "#9180a6", panel: "#ad9c5a", board: "#d9b23a", mixed: "#6f747d", copper: "#c8642a", aluminum: "#b8c4d0", excluded: "#d6d3ce" };
 const METHOD_COLOR = { 분별: "#1baf7a", 압쇄: "#9c9084" };
 
 const saved = (() => { try { return JSON.parse(localStorage.getItem("rc.state")) || {}; } catch { return {}; } })();
+const oldDefaults = { crew_size: 20, window_frame_pd_per_m2: 0.0229, indirect_per_day: 500000, crew_standing: 3, crew_per_excavator: 1 };
+const loadedParams = Object.fromEntries(Object.entries(saved.p || {}).filter(([k, v]) => (
+  Object.hasOwn(defaults, k) && Number.isFinite(v) && !rates.params[k].locked
+  && (saved.rateRevision >= 2 || oldDefaults[k] !== v)
+)));
+const caseMap = new Map(sampleCases.map((row) => [row.id, row]));
+const localCases = new Map();
+try {
+  const local = JSON.parse(localStorage.getItem("rc.validation") || "null");
+  if (local) for (const row of validationCases(local)) {
+    const oldSample = local.revision !== 2 && caseMap.has(row.id)
+      && (!row.verified || row.source === "논현동 124-1 해체계획서 p.9·19·40·118");
+    if (!oldSample) localCases.set(row.id, row);
+  }
+} catch { /* 손상된 브라우저 데이터는 기본 목록으로 복구한다. */ }
+const allCases = () => [...new Map([...caseMap, ...localCases]).values()];
+const caseFields = ["height", "equipment", "scope", "structure", "scaffold", "equipmentCrewPeriod", "craneDays", "parallelGain", "overlap", "mixedMineral", "mixedCombustible",
+  "boardM2", "tileM2", "pvcM2", "alM2", "generalFinishPd", "panelTons"];
 const state = {
   tab: "model", source: null, fileName: "", model: null, elements: [], overrides: {},
   area: saved.area || 2400, floors: saved.floors || 5, usage: saved.usage || "공동주택", supplement: true,
   site: saved.site in SITES ? saved.site : "normal", labor: saved.labor in LABOR_METHODS ? saved.labor : "paper",
-  // 저장된 단가 중 지금도 쓰는 키만 받는다 (없어진 변수는 버린다)
-  p: { ...defaults, ...Object.fromEntries(Object.entries(saved.p || {}).filter(([k]) => k in defaults)) }, seed: 1, colorMode: "stream", busy: "", error: "",
+  equipment: "auto", scope: "unknown", structure: "rc", scaffold: "yes", equipmentCrewPeriod: "structure",
+  ...Object.fromEntries(caseFields.filter((key) => saved[key] != null).map((key) => [key, saved[key]])),
+  p: { ...defaults, ...loadedParams }, seed: 1, colorMode: "stream", busy: "", error: "",
+  cases: allCases(), caseMessage: "", calibrationType: "plan", useCalibration: false,
 };
 let viewer = null, sim = null;
-const save = () => { try { localStorage.setItem("rc.state", JSON.stringify({ area: state.area, floors: state.floors, usage: state.usage, site: state.site, labor: state.labor, p: state.p })); } catch { /* 저장 불가여도 계산은 된다 */ } };
+const save = () => {
+  const settings = ["area", "floors", "usage", "site", "labor", ...caseFields];
+  const values = Object.fromEntries(settings.map((key) => [key, state[key]]));
+  const p = Object.fromEntries(Object.entries(state.p).filter(([key, value]) => value !== defaults[key]));
+  try { localStorage.setItem("rc.state", JSON.stringify({ ...values, p, rateRevision: 3 })); }
+  catch { /* 저장 불가여도 계산은 된다 */ }
+};
+const opts = (options, value) => Object.entries(options).map(([key, label]) =>
+  `<option value="${key}" ${value === key ? "selected" : ""}>${label}</option>`).join("");
+const numeric = (key, label, { max = "", placeholder = "미입력" } = {}) =>
+  `<label class="field">${label}<input class="input" type="number" min="0" ${max === "" ? "" : `max="${max}"`} step="any" placeholder="${placeholder}" data-set="${key}" value="${state[key] ?? ""}"></label>`;
+function projectInputs() {
+  return {
+    area_m2: state.area, floors: state.floors, site: state.site, labor: state.labor, equipment: state.equipment,
+    scope: state.scope, structure: state.structure, height: state.height, scaffold: state.scaffold === "yes", equipmentCrewPeriod: state.equipmentCrewPeriod,
+    craneDays: state.craneDays, parallelGain: (state.parallelGain ?? 0) / 100, overlap: (state.overlap ?? 0) / 100,
+    mixedMineral: (state.mixedMineral ?? 0) / 100, mixedCombustible: (state.mixedCombustible ?? 0) / 100,
+    generalFinishPd: state.generalFinishPd, caseId: state.caseId || state.plan?.source?.validation_id,
+  };
+}
 
 function derive() {
   if (!state.source) return null;
@@ -34,7 +75,16 @@ function derive() {
     q = state.supplement ? supplement(raw, state.usage, rates) : { ...raw, added: {} };
     q.raw = raw;
   } else q = { ...quantitiesFromArea(state.area, state.usage, rates), added: {} };
-  q.floors = state.floors; q.site = state.site; q.labor = state.labor;
+  Object.assign(q, projectInputs());
+  const manualAreas = { board: state.boardM2, tile: state.tileM2, pvc: state.pvcM2, aluminum: state.alM2 };
+  if (state.plan?.rebar_kg_per_m3?.value && state.p.rebar_kg_per_m3 === defaults.rebar_kg_per_m3) q.rebarKgPerM3 = state.plan.rebar_kg_per_m3.value;
+  q.finishAreas = { ...q.finishAreas, ...Object.fromEntries(Object.entries(manualAreas).filter(([, value]) => value != null)) };
+  q.panelWeightMissing = classified.some((el) => el.parts.some((part) => part.stream === "panel")) && state.panelTons == null;
+  q.t.panel = state.panelTons ?? q.t.panel;
+  if (state.useCalibration) {
+    const cal = calibrateStructure(state.cases, q, state.p, state.calibrationType);
+    if (cal.ready) q.structureFactor = cal.factor;
+  }
   return { classified, q, cmp: compare(q, state.p) };
 }
 
@@ -46,7 +96,6 @@ async function loadPlan(plan, name) {
     const { planToIfc } = await import("./plan.js");
     const b = plan.building || {};
     if (rates.wasteUnits[b.wasteUnit]) state.usage = b.wasteUnit;
-    if (plan.rebar_kg_per_m3?.value) state.p.rebar_kg_per_m3 = plan.rebar_kg_per_m3.value;
     await loadIfc(new TextEncoder().encode(planToIfc(plan)).buffer, `${name} → 자동 생성 구조체 모델`, b.demolition_area_m2 || b.area_m2, plan);
   } catch (e) {
     state.error = `계획서 데이터를 읽지 못했습니다: ${e.message}`; render();
@@ -54,14 +103,16 @@ async function loadPlan(plan, name) {
 }
 
 async function loadIfc(buffer, name, area, plan = null) {
-  state.plan = plan;
   state.busy = "IFC를 읽는 중입니다…"; state.error = ""; render();
   try {
     const { parseIfc } = await import("./ifc.js");
     const model = await parseIfc(buffer);
-    Object.assign(state, { source: "ifc", model, elements: model.elements, fileName: name, overrides: {},
+    const b = plan?.building;
+    Object.assign(state, { plan, source: "ifc", model, elements: model.elements, fileName: name, overrides: {}, caseId: "",
+      ...Object.fromEntries(["boardM2", "tileM2", "pvcM2", "alM2", "generalFinishPd", "panelTons"].map((key) => [key, undefined])),
       area: area || Math.round(model.gross.area),
-      floors: plan?.building?.floors_above || model.floors });
+      floors: b?.floors_above || model.floors });
+    state.height = b?.height_m;
   } catch (e) {
     state.error = `IFC를 읽지 못했습니다: ${e.message}`;
   }
@@ -96,7 +147,31 @@ function modelTab(d) {
         <div class="field"><label>분별 추가 품 계산</label><select class="select" data-set="labor">${Object.entries(LABOR_METHODS).map(([k, v]) => `<option value="${k}" ${k === state.labor ? "selected" : ""}>${v}</option>`).join("")}</select></div>
         ${state.source === "ifc" ? `<div class="field"><label>모델에 없는 내장재</label><label class="row"><input type="checkbox" data-set="supplement" ${state.supplement ? "checked" : ""}> 원단위로 보충한다</label></div>` : ""}
       </div>
-      <p class="caption muted" style="margin-top:8px">대지: 넉넉함이면 굴착기를 연면적 ${num(state.p.area_per_excavator)}㎡당 1대씩 늘리고, 보통은 1대, 협소·도심과 진입 제한은 소형 장비(${num(state.p.crush_m3_per_day_small, 1)}㎥/일)로 탑재 해체하며 크레인 1대가 붙습니다. 분별 추가 품의 작업량 방식은 보드·타일·창틀만 세고 선별·반출 품은 자료가 없어 빠져 있으므로, 논문 방식보다 낮게 나오는 하한값으로 보세요.</p>
+      <details id="site-details" style="margin-top:14px"><summary>현장 조건·자재 면적 입력</summary>
+        <div class="form-grid" style="margin-top:12px">
+          ${numeric("height", "건물 높이 (m)")}
+          <label class="field">구조체 <select class="select" data-set="structure">${opts({ rc: "철근콘크리트", other: "기타·복합 구조" }, state.structure)}</select></label>
+          <label class="field">해체 범위 <select class="select" data-set="scope">${opts(SCOPES, state.scope)}</select></label>
+          <label class="field">장비 운용 방식 <select class="select" data-set="equipment">${opts(EQUIPMENT, state.equipment)}</select></label>
+          <label class="field">가설 비계 <select class="select" data-set="scaffold">${opts({ yes: "비계공 투입", no: "비계공 0명" }, state.scaffold)}</select></label>
+          <label class="field">굴착기 연동 살수·신호 배치 기간 <select class="select" data-set="equipmentCrewPeriod">${opts({ structure: "구조체 작업일 (팀 기본값)", all: "전체 작업일" }, state.equipmentCrewPeriod)}</select></label>
+          ${numeric("craneDays", "탑재 해체 크레인 사용 일수")}
+          ${numeric("parallelGain", "추가 굴착기 1대당 병렬 효율 (%)", { max: 100, placeholder: "기본 0%" })}
+          ${numeric("overlap", "분별 추가 작업의 타 공정 병행률 (%)", { max: 100, placeholder: "기본 0%" })}
+          ${numeric("mixedMineral", "혼합·기타 중 확인된 건설폐재류 (%)", { max: 100 })}
+          ${numeric("mixedCombustible", "혼합·기타 중 확인된 가연물 (%)", { max: 100 })}
+          ${numeric("panelTons", "폐샌드위치패널 확인 중량 (t)")}
+          ${state.labor === "quantity" ? [
+            numeric("boardM2", "보드 면적 (㎡)", { placeholder: "IFC 또는 면적비" }),
+            numeric("tileM2", "타일 면적 (㎡)", { placeholder: "IFC 또는 면적비" }),
+            numeric("pvcM2", "PVC 창틀 면적 (㎡)", { placeholder: "IFC 또는 면적비" }),
+            numeric("alM2", "알루미늄 창틀 면적 (㎡)", { placeholder: "IFC 또는 면적비" }),
+            numeric("generalFinishPd", "동일 범위의 일반해체 공수 (인·일)"),
+          ].join("") : ""}
+        </div>
+        <p class="caption muted" style="margin-top:8px">비율 합계에서 남는 혼합·기타 물량은 성상 미확인으로 계산합니다. 높이는 비교 기록에 쓰입니다. 장비 방식은 현장 조건에 맞춰 지정하세요. 작업량 방식의 공란 면적은 식별된 IFC 물량 또는 면적비를 사용합니다.</p>
+      </details>
+      ${state.formError ? `<p class="badge badge-danger">${esc(state.formError)}</p>` : ""}
       ${state.source === "ifc" ? `<p class="caption muted" style="margin-top:8px">연면적과 층수는 모델에서 읽어 넣어 두었습니다. 연면적은 ${state.model?.gross?.basis === "slab" ? "바닥 슬래브 면적의 합" : "모델에 바닥 슬래브가 없어 외곽 크기 × 층수로 잡은 값(실제보다 클 수 있음)"}, 층수는 부재가 있는 층의 수입니다 (지하가 섞일 수 있습니다). 실제 값과 다르면 고치세요.${state.model?.lengthScale && state.model.lengthScale !== 1 ? ` 이 파일의 길이 단위는 ${state.model.lengthScale === 0.001 ? "mm" : `${state.model.lengthScale} m`}이며 m로 바꿔 계산했습니다.` : ""}</p>` : ""}
     </section>`;
   if (!d) return input;
@@ -165,7 +240,7 @@ function planCard(q) {
       <tr><th>유해물질</th><td>석면 ${plan.hazards?.asbestos ? "검출" : "불검출"}</td></tr>
       <tr><th>부재</th><td class="mono">${Object.entries(plan.sections).map(([k, s]) => `${k} ${s.t ? "T" + s.t : s.b + "×" + s.h}`).join(" · ")}</td></tr>
     </tbody></table></div>
-    ${want ? `<p style="margin-top:12px"><strong>검산:</strong> 생성한 모델의 콘크리트 ${num(model)}t ÷ 계획서 폐콘크리트 약 ${num(want)}t = <strong>${num((model / want) * 100)}%</strong>. 차이는 구조도면에 없는 조적벽·계단·외벽 마감으로 보입니다.</p>` : ""}
+    ${want ? `<p style="margin-top:12px"><strong>검산:</strong> 생성한 모델의 콘크리트 ${num(model)}t ÷ 계획서 폐콘크리트 약 ${num(want)}t = <strong>${num((model / want) * 100)}%</strong>. 물량 비교에는 부재 포함 범위와 산출 기준의 차이가 있을 수 있습니다.</p>` : ""}
     <p class="caption muted" style="margin-top:8px">구조체(기둥·보·벽·슬래브)와 바닥 마감 몰탈만 들어 있습니다. 내장재·창호·설비는 계획서에 없어 원단위로 보충합니다.${assumed.length ? ` 치수를 가정한 부재: ${assumed.join(", ")}.` : ""} ${esc(plan.source?.note || "")}</p>
   </section>`;
 }
@@ -198,13 +273,14 @@ function ratesTab() {
   for (const [k, v] of Object.entries(rates.params)) {
     if (v.group !== last) { rows += `<tr class="grp"><td colspan="5">${v.group}</td></tr>`; last = v.group; }
     const changed = state.p[k] !== v.value;
+    const shown = v.optional && state.p[k] < 0 ? "" : state.p[k];
     rows += `<tr><td>${esc(v.label)} ${v.assumed ? '<span class="badge badge-warning">가정</span>' : ""} ${changed ? '<span class="badge badge-info">수정됨</span>' : ""}</td>
-      <td class="r"><input class="input sm" type="number" step="any" data-p="${k}" value="${state.p[k]}"></td><td>${v.unit}</td>
-      <td class="muted">${v.min != null ? `${num(v.min, v.min < 10 ? 2 : 0)} ~ ${num(v.max, v.max < 10 ? 2 : 0)}` : "–"}</td>
-      <td class="muted">${esc(rates.sources[v.source] || "출처 없음 (잠정값)")}${v.date ? ` · ${v.date}` : ""}</td></tr>`;
+      <td class="r"><input class="input sm" type="number" step="any" data-p="${k}" value="${shown}" ${v.locked ? "disabled" : ""} ${v.optional ? 'placeholder="미확인"' : ""}></td><td>${v.unit}</td>
+      <td class="muted">${v.min != null ? `${num(v.min, v.min < 1 ? 5 : v.min < 10 ? 2 : 0)} ~ ${num(v.max, v.min < 1 ? 5 : v.min < 10 ? 2 : 0)}${v.sample === false ? " (대안 비교용)" : ""}` : "–"}</td>
+      <td class="muted">${esc(rates.sources[v.source] || "출처 없음 (잠정값)")}${v.date ? ` · ${v.date}` : ""}${v.ref ? `<br><small>${esc(v.ref)}</small>` : ""}</td></tr>`;
   }
   return `<section class="card"><div class="row" style="justify-content:space-between"><h2>단가·품·회수율</h2><button class="btn btn-outline btn-sm no-print" data-act="reset">기본값으로 되돌리기</button></div>
-      <p class="lead" style="margin-bottom:12px">값을 고치면 비교 결과가 바로 다시 계산됩니다. "범위"가 있는 항목은 민감도 분석과 몬테카를로에서 그 범위 안에서 움직입니다.</p>
+      <p class="lead" style="margin-bottom:12px">값을 고치면 비교 결과가 바로 다시 계산됩니다. 확률 분석은 계산 범위가 있는 항목을 변화시킵니다. 대안 비교용 값과 서로 다른 조건의 공고 단가는 별도로 비교합니다.</p>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>항목</th><th class="r">값</th><th>단위</th><th>범위 (최소 ~ 최대)</th><th>출처 · 기준</th></tr></thead><tbody>${rows}</tbody></table></div>
     </section>
     <section class="card"><h2>엔진 검증: 기준 논문 재현 <span class="badge ${ok ? "badge-success" : "badge-danger"}">${ok ? "일치" : "불일치"}</span></h2>
@@ -225,13 +301,26 @@ function compareTab(d) {
   const vars = variables(rates);
   sim ||= simulate(q, p, vars, { n: 5000, seed: state.seed });
   const better = delta < 0 ? "전면 분별해체" : "일괄 압쇄";
+  const issues = [...new Set([...crush.issues, ...selective.issues])];
+  const equality = delta === 0;
+  const work = selExtra(q, p);
+  const indirect = rates.params.indirect_per_day;
+  const crewOnWholeJob = q.equipmentCrewPeriod === "all";
+  const alternatePrices = [
+    ["폐목재 유상 처리 사례 (운반·선별·VAT 포함)", { net_wood: -80000 }],
+    ["폐합성수지 유상 처리 사례 (소각, 운반 별도)", { net_resin: -220000 }],
+    ["폐합성수지 매각 사례 (소형가전 파쇄물)", { net_resin: 258000 }],
+  ];
+  const resinSwitch = breakEven(q, p, "net_resin", -1000000, 5000000);
+  const paperAlt = q.labor === "paper" ? compare(q, { ...p, sel_extra_laborer: 0.325 }) : null;
+  const mixLabel = { mineral: "건설폐재류", glass: "유리·타일", board: "보드", unknown: "미확인", none: "해당 없음" };
   const torn = tornado(q, p, vars).filter((t) => t.span > 1).slice(0, 10);
 
   const be = vars.map((v) => {
     const x = breakEven(q, p, v.key, v.min, v.max); // 범위 밖에서만 뒤집히는 변수는 뺀다
     if (x == null) return "";
-    const up = compare(q, { ...p, [v.key]: x * 1.01 + 1e-9 }).delta < 0;
-    const f = (n) => num(n, v.unit === "비율" ? 2 : v.unit === "인/㎡" ? 3 : 0);
+    const up = compare(q, { ...p, [v.key]: x + Math.max(1e-9, (v.max - v.min) * 1e-6) }).delta < 0;
+    const f = (n) => num(n, v.unit === "비율" ? 2 : v.unit === "인·일/㎡" ? 5 : 0);
     return `<li><strong>${esc(v.label)}</strong>: <strong>${f(x)} ${v.unit === "비율" ? "" : v.unit}</strong> ${up ? "이상" : "이하"}이면 분별해체가 유리 <span class="muted">(현재 ${f(p[v.key])}, 범위 ${f(v.min)} ~ ${f(v.max)})</span></li>`;
   }).filter(Boolean).join("");
 
@@ -249,40 +338,49 @@ function compareTab(d) {
   }
 
   return `<section class="card">
-      <p class="verdict">기본 단가로는 <span class="badge ${delta < 0 ? "badge-success" : "badge-neutral"}" style="font-size:16px">${better}</span>가 ${mil(Math.abs(delta))}백만원 (${num((Math.abs(delta) / crush.total) * 100, 1)}%) 더 쌉니다.${Math.abs(delta) / crush.total < 0.01 ? " 차이가 1% 미만이라 사실상 같은 수준입니다." : ""}</p>
-      <p>단가 불확실성을 넣으면 분별해체가 더 쌀 확률은 <strong>${num(sim.pSelective * 100, 1)}%</strong>입니다.</p>
-      <p class="caption muted">기본 단가 기준 확정값입니다. 단가가 범위 안에서 움직일 때의 확률은 아래 몬테카를로를 보세요. ${q.basis === "원단위" ? "물량은 면적 × 원단위 추정입니다." : ""}</p>
+      <p class="verdict">입력값 기준 추정 · ${equality ? "두 공법의 순비용이 같습니다." : `<strong>${better}</strong>의 순비용이 ${mil(Math.abs(delta))}백만원 낮습니다.`}</p>
+      ${issues.length ? `<ul class="caption muted">${issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : ""}
+      <p class="caption muted">5,000회 비교의 ${num(sim.pSelective * 100, 1)}%에서 분별 순비용이 더 낮았습니다. 이 비율은 입력한 탐색 범위와 삼각분포에 따른 값입니다.</p>
     </section>
     <section class="kpis">
       <div class="card kpi"><div class="v">${mil(crush.total)}</div><div class="l">일괄 압쇄 순비용 (백만원)</div><div class="s">공기 ${num(crush.days)}일</div></div>
       <div class="card kpi"><div class="v">${mil(selective.total)}</div><div class="l">전면 분별해체 순비용 (백만원)</div><div class="s">공기 ${num(selective.days)}일 (+${num(cmp.deltaDays, 1)}일)</div></div>
-      <div class="card kpi"><div class="v">${delta > 0 ? "+" : "−"}${mil(Math.abs(delta))}</div><div class="l">Δ = 분별 − 압쇄 (백만원)</div><div class="s">음수면 분별이 유리</div></div>
-      <div class="card kpi"><div class="v">${num(sim.pSelective * 100, 1)}%</div><div class="l">분별해체가 더 경제적일 확률</div><div class="s">${num(sim.n)}회 시뮬레이션</div></div>
+      <div class="card kpi"><div class="v">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${mil(Math.abs(delta))}</div><div class="l">Δ = 분별 − 압쇄 (백만원)</div><div class="s">음수면 분별이 유리</div></div>
+      <div class="card kpi"><div class="v">${num(sim.pSelective * 100, 1)}%</div><div class="l">분별 순비용이 낮은 시행 비율</div><div class="s">${num(sim.n)}회 시뮬레이션</div></div>
     </section>
     <section class="card"><h2>비용 구성</h2>${stackedBars([{ ...crush, name: "일괄 압쇄" }, { ...selective, name: "전면 분별" }])}</section>
     <section class="card"><h2>견적 내역</h2>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>항목</th><th class="r">단가 (원, 다르면 압쇄 / 분별)</th><th class="r">압쇄 수량</th><th class="r">압쇄 (백만원)</th><th class="r">분별 수량</th><th class="r">분별 (백만원)</th><th class="r">차이</th></tr></thead>
       <tbody>${detail}</tbody><tfoot><tr><td>순비용 (비용 − 매각수익)</td><td></td><td></td><td class="r">${mil(crush.total, 2)}</td><td></td><td class="r">${mil(selective.total, 2)}</td><td class="r">${mil(delta, 2)}</td></tr></tfoot></table></div>
-      <p class="caption muted" style="margin-top:8px">분별 후 혼합건설폐기물: 남은 가연물(목재·수지) ${num(selective.mixed.share * 100, 1)}% (한도 ${num(p.mixed_combustible_limit * 100, 0)}%) · 주성상 ${{ mixed: "건설폐재류", glass: "유리·타일", board: "보드" }[selective.mixed.main]} → <strong>${esc(selective.mixed.rule)}</strong> ${num(selective.mixed.fee)}원/t (한국건설자원협회 2026 중간처리단가 적용 조건). 따로 모은 폐목재·폐합성수지는 순단가 하나로 계산해, 값이 +이면 매각수익, −이면 처리비에 들어갑니다.</p>
+      <ul class="caption muted">${[["압쇄", crush], ["분별", selective]].map(([label, { mixed, unsoldMetal }]) =>
+        `<li>${label} 혼합잔재 ${num(mixed.tons, 2)}t · 확인된 가연물 ${num(mixed.share * 100, 1)}% · 주성상 ${mixLabel[mixed.main]} · ${esc(mixed.rule)} ${num(mixed.fee)}원/t${mixed.needsQuote ? " (잠정)" : ""} · 미매각 금속 ${num(unsoldMetal, 2)}t</li>`).join("")}</ul>
+      <details style="margin-top:8px"><summary>일당 간접비 ${num(p.indirect_per_day)}원 · 가정 (탐색 범위 ${num(indirect.min)}~${num(indirect.max)}원)</summary><p class="caption muted">${esc(indirect.ref)} 간접비는 각 공법의 작업일에 곱합니다.</p></details>
+      <p class="caption muted">협회 중간처리단가에 현장 수집·운반비와 VAT는 포함되지 않습니다. 폐목재·폐합성수지의 순단가는 양수면 매각수익, 음수면 처리비입니다.</p>
     </section>
     <section class="card"><h2>공기와 투입 인원</h2>
-      <div class="table-wrap"><table class="tbl"><thead><tr><th>공종</th><th>일수 계산식</th><th class="r">작업조 (인/일)</th><th class="r">압쇄 일수</th><th class="r">압쇄 인원</th><th class="r">분별 일수</th><th class="r">분별 인원</th></tr></thead><tbody>
+      <div class="table-wrap"><table class="tbl"><thead><tr><th>공종</th><th>일수 계산식</th><th class="r">작업조 (명)</th><th class="r">압쇄 일수</th><th class="r">압쇄 공수</th><th class="r">분별 일수</th><th class="r">분별 공수</th></tr></thead><tbody>
         ${[["setup", "가설 설치 (비계·방진막)", `${num(p.sched_setup_base, 1)} + 연면적 ÷ 1,000 × ${num(p.sched_setup_per_1000m2, 1)}`],
            ["interior", "내부 철거", `연면적 ÷ 1,000 × ${num(p.sched_interior_per_1000m2, 1)} (최소 ${num(p.sched_interior_min, 1)}일)`],
-           ["structure", "구조체 해체", `${num(p.sched_struct_base, 1)} + ${num(p.sched_struct_per_floor, 1)} × ${num(q.floors)}층 + 연면적 ÷ ${smallSite(q) ? `(${num(p.sched_struct_m2_per_day)} × 소형 장비 ${num(p.crush_m3_per_day_small, 1)}/${num(p.crush_m3_per_day, 1)})` : num(p.sched_struct_m2_per_day)}`],
+           ["structure", "구조체 해체", `면적식 ${num(crush.schedule.areaDays, 1)}일${q.structureFactor ? ` × 보정계수 ${num(q.structureFactor, 3)}` : ""}, 장비 생산성 기준 ${num(crush.schedule.volumeDays, 1)}일 중 큰 값`],
            ["finish", "마무리 (정리·비계 해체)", `${num(p.sched_finish_base, 1)} + 연면적 ÷ 1,000 × ${num(p.sched_finish_per_1000m2, 1)}`]]
-          .map(([k, label, f]) => `<tr><td>${label}</td><td class="muted">${f}</td><td class="r">${num(crush.crews[k])}</td><td class="r">${num(crush.schedule[k], 1)}</td><td class="r">${num(crush.crews[k] * crush.schedule[k])}</td><td class="r">${num(selective.schedule[k], 1)}</td><td class="r">${num(selective.crews[k] * selective.schedule[k])}</td></tr>`).join("")}
-        <tr><td>분별 추가 작업</td><td class="muted">${q.labor === "quantity" ? `연면적 × (보드 ${num(p.int_board_ratio, 2)} ÷ ${num(p.int_board_m2_per_day)}㎡ + 타일 ${num(p.int_tile_ratio, 2)} ÷ ${num(p.int_tile_m2_per_day)}㎡ + 창호 ${num(p.window_ratio, 2)} × ${num(p.window_frame_pd_per_m2, 4)}인)` : `연면적 × (목공 ${num(p.sel_extra_carpenter, 3)} + 보통인부 ${num(p.sel_extra_laborer, 3)}인/㎡)`} ÷ 작업조 ${num(p.crew_size)}인/일</td><td class="r">${num(p.crew_size)}</td><td class="r">–</td><td class="r">–</td><td class="r">${num(selective.schedule.selective, 1)}</td><td class="r">${num(selExtra(q, p).persons)}</td></tr>
-        <tr><td>상시 인원 (신호수·유도자·살수공)</td><td class="muted">전체 공기 동안 · 굴착기 ${num(crush.crews.excavators)}대</td><td class="r">${num(crush.crews.standing)}</td><td class="r">${num(crush.days, 1)}</td><td class="r">${num(crush.crews.standing * crush.days)}</td><td class="r">${num(selective.days, 1)}</td><td class="r">${num(selective.crews.standing * selective.days)}</td></tr>
-      </tbody><tfoot><tr><td>공기 (작업일) · 총 인원</td><td></td><td></td><td class="r">${num(crush.days, 1)}</td><td class="r">${num(persons(crush))}</td><td class="r">${num(selective.days, 1)}</td><td class="r">${num(persons(selective))}</td></tr></tfoot></table></div>
+          .map(([k, label, f]) => `<tr><td>${label}</td><td class="muted">${f}</td><td class="r">${k === "structure" ? "–" : num(crush.crews[k])}</td><td class="r">${num(crush.schedule[k], 1)}</td><td class="r">${k === "structure" ? "–" : num(crush.crews[k] * crush.schedule[k])}</td><td class="r">${num(selective.schedule[k], 1)}</td><td class="r">${k === "structure" ? "–" : num(selective.crews[k] * selective.schedule[k])}</td></tr>`).join("")}
+        <tr><td>분별 추가 작업</td><td class="muted">${work.method === "quantity" ? `자재별 분별 총공수 ${num(work.gross, 2)} − 일반해체 공수 ${work.baseline ?? "미입력"} 인·일` : `연면적 × (목공 ${num(p.sel_extra_carpenter, 3)} + 보통인부 ${num(p.sel_extra_laborer, 3)} 인·일/㎡)`} ÷ 작업조 ${num(p.crew_size)}명</td><td class="r">${num(p.crew_size)}</td><td class="r">–</td><td class="r">–</td><td class="r">${num(selective.schedule.selective, 1)}</td><td class="r">${num(work.persons, 1)}</td></tr>
+        <tr><td>상시 작업유도·감시</td><td class="muted">전체 작업일</td><td class="r">${num(crush.crews.standing)}</td><td class="r">${num(crush.days, 1)}</td><td class="r">${num(crush.crews.standing * crush.days)}</td><td class="r">${num(selective.days, 1)}</td><td class="r">${num(selective.crews.standing * selective.days)}</td></tr>
+        <tr><td>굴착기 연동 살수·신호</td><td class="muted">${crewOnWholeJob ? "전체 작업일" : "구조체 작업일"} · 굴착기 ${num(crush.crews.excavators)}대 × ${num(p.crew_per_excavator)}명/대</td><td class="r">${num(crush.crews.structure)}</td><td class="r">${num(crush.equipmentCrewDays, 1)}</td><td class="r">${num(crush.crews.structure * crush.equipmentCrewDays)}</td><td class="r">${num(selective.equipmentCrewDays, 1)}</td><td class="r">${num(selective.crews.structure * selective.equipmentCrewDays)}</td></tr>
+      </tbody><tfoot><tr><td>공기 (작업일) · 총공수 (인·일)</td><td></td><td></td><td class="r">${num(crush.days, 1)}</td><td class="r">${num(persons(crush))}</td><td class="r">${num(selective.days, 1)}</td><td class="r">${num(persons(selective))}</td></tr></tfoot></table></div>
       <p>구조체 공정일수는 두 공법 모두 <strong>${num(crush.schedule.structure, 1)}일</strong>입니다. 굴착기 가동시간은 두 공법 모두 <strong>${num(crush.excavatorHours, 1)} 장비·시간</strong>입니다 (콘크리트 부피 ÷ 일일 해체량 × 하루 작업시간).</p>
-      ${smallSite(q) ? '<p class="caption muted">소형 굴착기 시간당 비용은 팀 조사 잠정값입니다. 압쇄기 비용 포함 여부는 확인이 필요합니다.</p>' : ""}
-      <p class="caption muted" style="margin-top:8px">공기는 해체계획서 4건의 예정공정표에서 뽑은 규칙입니다 (RC 전체 해체 3건은 오차 ±15% 안, 소형 장비를 쓴 산지 현장 1건은 −38%). 인건비는 공종별 일수 × 작업조로 계산하며 작업조 인원은 대부분 가정입니다 (인원표가 있는 계획서 1건과 하루 인원이 비슷함). 분별 추가 인원은 ${q.labor === "quantity" ? "떼어 내는 자재 면적(연면적 × 면적비, 가정)을 1인 1일 작업량(석고보드 30㎡, 타일 10㎡)으로 나누고 창틀 분별 공수를 더한 값으로, 선별·반출 품은 빠져 있습니다" : "기준 논문 표 3·4의 차이 품을 연면적에 곱한 값입니다"}. 대지가 ${SITES[q.site] || "보통"}${smallSite(q) ? "이라 구조체 해체가 소형 장비 해체량만큼 길어집니다" : "입니다"}. 굴착기 운전원은 장비비에 들어 있습니다.</p>
+      <p class="caption muted">배치 인원은 천마산 p.38, 정선 p.65, 노량진 p.104의 계획을 참고했습니다. 구조체 기간에만 굴착기 연동 인원을 배치하고 관리자를 직접노무에서 제외하는 것은 팀 가정입니다. 천마산은 살수와 작업유도를 각각 전체 21일로 계획했습니다. 모델의 현장 조건에서 전체 작업일 배치도 비교할 수 있습니다.</p>
+      <p class="caption muted" style="margin-top:8px">장비 방식은 ${EQUIPMENT[equipmentMode(q)]}입니다. 분별 추가 작업 ${num(selective.schedule.selective, 1)}일 중 병행률 ${num(q.overlap * 100, 1)}%를 반영해 전체 공기가 ${num(selective.schedule.extension, 1)}일 늘어납니다. 보드·타일 외 선별 공수는 확인된 별도 항목이 없습니다.</p>
+      ${paperAlt ? `<p class="caption muted">표 3·4 기재를 달리 해석해 보통인부 추가 품을 0.325로 두면, Δ는 ${mil(paperAlt.delta, 2)}백만원, 공기 차이는 ${num(paperAlt.deltaDays, 1)}일입니다. 이 해석의 출처 확인이 필요합니다.</p>` : ""}
     </section>
     <div class="grid-2">
       <section class="card"><h2>손익분기</h2>${be ? `<ul style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px">${be}</ul>` : `<p class="muted">범위 안에서 결과를 뒤집는 변수가 없습니다.</p>`}
-        <p class="caption muted" style="margin-top:12px">다른 값은 그대로 두고 한 변수만 바꿨을 때 두 안의 비용이 같아지는 지점입니다. 조사 범위 안에서 결과를 뒤집을 수 있는 변수만 보여줍니다.</p></section>
-      <section class="card"><h2>몬테카를로 확률</h2>${histChart(histogram(sim.sorted))}
+        <p class="caption muted" style="margin-top:12px">폐합성수지 순단가 손익분기 ${resinSwitch == null ? "탐색 구간 내 없음" : `${num(resinSwitch)}원/t`} (다른 입력 고정, −100만~500만원/t 탐색).<br>다른 값은 그대로 두고 한 변수만 바꿨을 때 두 안의 비용이 같아지는 지점입니다. 조사 범위 안에서 결과를 뒤집을 수 있는 변수만 보여줍니다.</p>
+        <details style="margin-top:8px"><summary>폐목재·수지 사례별 Δ</summary>
+          <p class="caption muted">배출원과 비용 포함 범위가 다른 공고 사례입니다.</p>
+          <ul>${alternatePrices.map(([label, changes]) => `<li>${label} · ${num(Object.values(changes)[0])}원/t → Δ ${mil(compare(q, { ...p, ...changes }).delta, 2)}백만원</li>`).join("")}</ul>
+        </details></section>
+      <section class="card"><h2>몬테카를로 결과</h2>${histChart(histogram(sim.sorted))}
         <div class="row" style="margin-top:12px;justify-content:space-between"><span class="num">P10 ${mil(sim.p10)} · P50 ${mil(sim.p50)} · P90 ${mil(sim.p90)} 백만원</span>
         <label class="row no-print caption muted">seed <input class="input sm" style="width:80px" type="number" min="1" data-set="seed" value="${state.seed}"></label></div>
         <p class="caption muted" style="margin-top:8px">범위가 있는 단가 ${vars.length}개를 삼각분포로 뽑아 Δ를 ${num(sim.n)}번 계산했습니다. seed가 같으면 결과가 같습니다.</p></section>
@@ -295,14 +393,76 @@ const persons = (s) => s.rows.filter((r) => r.group === "인건비").reduce((a, 
 
 const empty = () => `<section class="card"><p>먼저 <strong>모델</strong> 단계에서 IFC를 올리거나 면적을 넣어 주세요.</p><p style="margin-top:12px"><button class="btn btn-primary" data-tab="model">모델 단계로</button></p></section>`;
 
+function validationTab(d) {
+  const q = d?.q ?? projectInputs();
+  const comparable = comparableCases(state.cases, q, state.calibrationType);
+  const cal = calibrateStructure(state.cases, q, state.p, state.calibrationType);
+  const available = (v, decimal = 1) => v == null ? "–" : num(v, decimal);
+  const range = (row) => row.total_days_max == null ? available(row.total_days) : `${num(row.total_days)}~${num(row.total_days_max)}`;
+  const error = (v, base) => v == null || !base ? "–" : `${v >= base ? "+" : ""}${num(100 * (v - base) / base, 1)}%`;
+  const fields = Object.entries(BENCHMARKS).map(([key, [label, unit]]) => {
+    const b = benchmark(comparable, key);
+    const digits = unit === "인·일/㎡" ? 5 : unit === "원/일" ? 0 : 2;
+    return `<tr><td>${label}</td><td>${unit}</td><td class="r">${b?.count ?? 0}</td><td class="r">${b ? num(b.median, digits) : "–"}</td><td class="r">${b ? `${num(b.min, digits)}~${num(b.max, digits)}` : "–"}</td></tr>`;
+  }).join("");
+  const cases = state.cases.map((row) => {
+    const actual = row.total_days_max == null ? error(row.prior_days, row.total_days)
+      : `${error(row.prior_days, row.total_days_max)} ~ ${error(row.prior_days, row.total_days)}`;
+    const modelComparable = row.structure === "rc" && ["above", "full"].includes(row.scope)
+      && ["large", "small", "mounted"].includes(row.equipment) && row.area_m2 > 0 && row.floors > 0;
+    const current = modelComparable ? schedule(row, state.p, "crush") : null;
+    const period = row.period_length == null ? "–" : `${num(row.period_length)}${PERIOD_UNITS[row.period_unit]}${row.period_max ? " 이내" : ""}`;
+    const mismatch = current && row.total_days && row.total_days_max == null ? error(current.total, row.total_days) : "";
+    const total = current && available(current.total);
+    return `<tr><td><strong>${esc(row.name)}</strong><br><small>${esc(row.source)} · ${row.verified ? "원문 대조" : "조원 기록"} · ${row.type === "plan" ? "계획" : "실적"}${row.note ? `<br>${esc(row.note)}` : ""}</small></td>
+      <td>${row.structure === "rc" ? "RC" : "기타"} · ${row.area_m2 == null ? "면적 미확인" : `${num(row.area_m2, 2)}㎡`} · ${row.floors == null ? "층수 미확인" : `${row.floors}층`} · ${SCOPES[row.scope]}</td>
+      <td class="r">${period}</td><td class="r">${range(row)} / ${available(row.structure_days)}</td>
+      <td class="r">${available(row.prior_days)}${actual === "–" ? "" : ` (${actual})`}</td>
+      <td class="r">${total ? `${total}${row.concrete_m3 == null ? " (면적식)" : ""}${mismatch ? ` · ${mismatch}` : ""}` : "–"}</td>
+      <td class="r">${available(row.prior_crew)} / ${available(row.crew_mean)}</td>
+      <td class="r">${available(row.prior_concrete_t, 0)} / ${available(row.concrete_t, 0)}${row.concrete_t && row.prior_concrete_t != null ? ` (${error(row.prior_concrete_t, row.concrete_t)})` : ""}</td></tr>`;
+  }).join("");
+  return `<section class="card">
+      <div class="row no-print">
+        <label class="btn btn-primary">검증자료 JSON 가져오기<input type="file" id="validation-file" accept=".json,application/json" hidden></label>
+        <button class="btn btn-outline" data-act="validation-export">표본 목록 JSON 내려받기</button>
+      </div>
+      ${state.caseMessage ? `<p role="status">${esc(state.caseMessage)}</p>` : ""}
+      <p class="caption muted">계획서 PDF의 공정표와 물량표를 확인한 후 숫자와 쪽수를 JSON에 입력하세요. 달력일, 주·개월 일정과 작업일은 단위를 구분합니다. 계획값과 완료 현장의 실적은 따로 비교합니다. 파일 입력은 이 브라우저에 저장됩니다.</p>
+      <div class="table-wrap"><table class="tbl"><thead><tr><th>현장 · 출처</th><th>대상</th><th>계획서 기간</th><th>전체 / 구조체 작업일</th><th>기존 사이트 (공기 오차)</th><th>현재 압쇄 모델 (일)</th><th>기존 사이트 / 자료 인원 (명)</th><th>기존 사이트 / 자료 폐콘크리트 (t)</th></tr></thead><tbody>${cases}</tbody></table></div>
+    </section>
+    <section class="card">
+      <h2>유사 현장으로 구조체 공기 보정</h2>
+      <div class="form-grid">
+        <label class="field">참조 자료 <select class="select" data-set="calibrationType">${opts({ plan: "예정공정표", actual: "완료 현장 실적" }, state.calibrationType)}</select></label>
+        <label class="field">보정 표본에서 제외할 현장 <select class="select" data-set="caseId">
+          <option value="">새 현장</option>${state.cases.map((row) => `<option value="${esc(row.id)}" ${q.caseId === row.id ? "selected" : ""}>${esc(row.name)}</option>`).join("")}
+        </select></label>
+      </div>
+      <p class="caption muted">원문을 대조한 RC 현장 중 해체 범위와 장비 방식이 같고, 면적은 대상의 0.5~2배, 층수는 ±2층인 사례를 씁니다. 구조체 작업일과 부피가 있는 사례 ${MIN_CASES}건 이상에서 한 건씩 빼고 예측해 평균 절대오차를 확인합니다.</p>
+      <p>현재 조건 ${num(q.area_m2)}㎡ · 지상 ${q.floors}층 · ${SCOPES[q.scope]} · ${EQUIPMENT[equipmentMode(q)]}<br>유사 사례 ${comparable.length}건 · 구조체 공기 보정용 ${cal.count}건</p>
+      ${cal.count >= MIN_CASES ? `<p>평균 절대오차 · 기존 ${num(cal.baseMae, 2)}일 / 교차검증 ${num(cal.cvMae, 2)}일 · 보정계수 ${num(cal.factor, 3)}</p>` : "<p>보정에 필요한 구조체 작업일·부피 자료가 부족합니다.</p>"}
+      <button class="btn btn-outline no-print" data-act="calibration-toggle" ${!cal.ready && !state.useCalibration ? "disabled" : ""}>${state.useCalibration ? "보정 해제" : "현재 비교에 보정 적용"}</button>
+      ${state.useCalibration && cal.ready ? '<p role="status">현재 비교 계산에 보정계수를 적용합니다.</p>' : ""}
+      ${cal.count >= MIN_CASES && !cal.ready ? "<p>교차검증 오차가 감소하지 않아 기존 공기식을 사용합니다.</p>" : ""}
+    </section>
+    <section class="card"><h2>공수·작업조·장비·간접비 참고값</h2>
+      <p class="caption muted">유사 현장에서 확인된 항목만 중앙값과 관측 범위를 표시합니다. 같은 작업 범위와 단위인지 확인한 뒤 단가 탭에 반영할 수 있습니다.</p>
+      <div class="table-wrap"><table class="tbl"><thead><tr><th>항목</th><th>단위</th><th class="r">표본 수</th><th class="r">중앙값</th><th class="r">관측 범위</th></tr></thead><tbody>${fields}</tbody></table></div>
+    </section>`;
+}
+
 /* ---------------- 내보내기 ---------------- */
 function summary(d) {
   const { crush, selective, delta, deltaDays } = d.cmp;
   sim ||= simulate(d.q, state.p, variables(rates), { n: 5000, seed: state.seed });
   return { source: state.source === "ifc" ? state.fileName : "area", area_m2: state.area, usage: state.usage, site: state.site, labor_method: state.labor,
     crush_total_won: Math.round(crush.total), selective_total_won: Math.round(selective.total), delta_won: Math.round(delta),
+    indirect_per_day_won: state.p.indirect_per_day, equipment_crew_period: d.q.equipmentCrewPeriod,
     crush_days: +crush.days.toFixed(1), selective_days: +selective.days.toFixed(1), delta_days: +deltaDays.toFixed(1),
-    p_selective_cheaper: +sim.pSelective.toFixed(4), seed: state.seed, recommended: delta < 0 ? "selective" : "crush" };
+    p_selective_cheaper: +sim.pSelective.toFixed(4), seed: state.seed, estimate: true,
+    input_issues: [...new Set([...crush.issues, ...selective.issues])],
+    structure_calibration_factor: d.q.structureFactor ?? null, recommended: delta === 0 ? "tie" : delta < 0 ? "selective" : "crush" };
 }
 
 function exportTab(d) {
@@ -341,14 +501,17 @@ const HEAD = {
   model: ["모델과 물량", "Revit에서 내보낸 IFC에서 부재·재료별 물량을 뽑고, 폐기물 성상으로 분류합니다."],
   rates: ["단가", "노임, 품, 처리비, 매각가, 회수율입니다. 모든 값에 출처와 기준 연도를 표시합니다."],
   compare: ["공법 비교", "일괄 압쇄와 전면 분별해체의 인건비·장비비·처리비·매각수익·간접비를 비교합니다."],
+  validation: ["해체계획서 검증·보정", "계획 공기와 사이트 계산을 비교하고, 유사한 현장 자료로 구조체 공기를 보정합니다."],
   export: ["내보내기", "부재별 결과를 CSV로 내보내 Revit 모델에 기록합니다."],
 };
 
 function render() {
   const d = derive();
   $("#tabs").innerHTML = TABS.map(([k, l], i) => `<button data-tab="${k}" ${k === state.tab ? 'aria-current="step"' : ""}><span>${i + 1}</span>${l}</button>`).join("");
-  const body = { model: modelTab, rates: ratesTab, compare: compareTab, export: exportTab }[state.tab](d);
+  const wasOpen = $("#site-details")?.open;
+  const body = { validation: validationTab, model: modelTab, rates: ratesTab, compare: compareTab, export: exportTab }[state.tab](d);
   $("#content").innerHTML = `<div><h1>${HEAD[state.tab][0]}</h1><p class="lead">${HEAD[state.tab][1]}</p></div>${body}`;
+  if (wasOpen && $("#site-details")) $("#site-details").open = true;
   if (d) mountViewer(d);
 }
 
@@ -360,7 +523,12 @@ document.addEventListener("click", async (e) => {
   const act = t.dataset.act, d = derive();
   if (act === "sample") return loadIfc(await (await fetch("assets/data/sample.ifc")).arrayBuffer(), "sample.ifc (예시 5층 공동주택)", 2400);
   if (act === "plan-sample") return loadPlan(await json("plans/example.json"), "계획서 예시");
-  if (act === "area") { Object.assign(state, { source: "area", model: null, elements: [], error: "" }); sim = null; return render(); }
+  if (act === "area") { Object.assign(state, { source: "area", plan: null, model: null, elements: [], error: "" }); sim = null; return render(); }
+  if (act === "validation-export") return download("reclaim-validation.json", JSON.stringify({ schema: VALIDATION_SCHEMA, cases: state.cases }, null, 2), "application/json");
+  if (act === "calibration-toggle") {
+    state.useCalibration = !state.useCalibration;
+    sim = null; return render();
+  }
   if (act === "reset") { state.p = { ...defaults }; sim = null; save(); return render(); }
   if (act === "csv") return download("reclaim_elements.csv", "﻿" + toCsv(elementResults(d.classified, state.p, d.cmp.selective.mixed.fee)), "text/csv");
   if (act === "json") return download("reclaim_summary.json", JSON.stringify(summary(d), null, 2), "application/json");
@@ -374,10 +542,41 @@ document.addEventListener("change", async (e) => {
     try { return loadPlan(JSON.parse(await t.files[0].text()), t.files[0].name); }
     catch (e) { state.error = `JSON을 읽지 못했습니다: ${e.message}`; return render(); }
   }
-  if (t.dataset.p) { const v = Number(t.value); if (Number.isFinite(v)) state.p[t.dataset.p] = v; }
+  if (t.id === "validation-file" && t.files[0]) {
+    try {
+      const imported = validationCases(JSON.parse(await t.files[0].text()));
+      for (const row of imported) localCases.set(row.id, row);
+      state.cases = allCases();
+      try {
+        localStorage.setItem("rc.validation", JSON.stringify({ schema: VALIDATION_SCHEMA, revision: 2, cases: [...localCases.values()] }));
+        state.caseMessage = `${imported.length}건을 반영했습니다. 같은 ID는 새 자료로 갱신했습니다.`;
+      } catch { state.caseMessage = "현재 세션에 반영했습니다. 유지하려면 검증자료 JSON을 내려받으세요."; }
+    } catch (err) { state.caseMessage = err.message; }
+    sim = null; return render();
+  }
+  state.formError = "";
+  if (t.dataset.p) {
+    const key = t.dataset.p, meta = rates.params[key], v = Number(t.value);
+    const signed = key === "net_wood" || key === "net_resin";
+    const nonzero = /per_day$|per_1000m2$/.test(key) && !key.startsWith("sched_") && key !== "indirect_per_day" && key !== "crane_per_day"
+      || ["crew_size", "area_per_excavator", "hours_per_day", "crush_m3_per_day_small", "sched_struct_m2_per_day"].includes(key);
+    if (meta.optional && !t.value) state.p[key] = -1;
+    else if (!meta.locked && t.value && Number.isFinite(v) && (signed || v >= 0) && (!nonzero || v > 0) && (meta.unit !== "비율" || v <= 1)) state.p[key] = v;
+    else return render();
+  }
   else if (t.dataset.set === "supplement") state.supplement = t.checked;
-  else if (["usage", "site", "labor"].includes(t.dataset.set)) state[t.dataset.set] = t.value;
-  else if (t.dataset.set) { const v = Number(t.value); if (v > 0) state[t.dataset.set] = v; }
+  else if (t.dataset.set === "caseId") state.caseId = t.value;
+  else if (t.dataset.set === "calibrationType") state.calibrationType = t.value;
+  else if (["usage", "site", "labor", "equipment", "scope", "structure", "scaffold", "equipmentCrewPeriod"].includes(t.dataset.set)) state[t.dataset.set] = t.value;
+  else if (caseFields.includes(t.dataset.set)) {
+    const key = t.dataset.set, v = t.value === "" ? undefined : Number(t.value);
+    const limit = t.max ? Number(t.max) : Infinity;
+    if (v != null && (!Number.isFinite(v) || v < 0 || v > limit)) state.formError = "입력 범위를 확인하세요.";
+    else if (key.startsWith("mixed") && (v ?? 0) + (state[key === "mixedMineral" ? "mixedCombustible" : "mixedMineral"] ?? 0) > 100) {
+      state.formError = "혼합·기타 중 건설폐재류와 가연물의 합은 100% 이하여야 합니다.";
+    } else state[key] = v;
+  }
+  else if (t.dataset.set) { const v = Number(t.value); if (v > 0 && Number.isFinite(v)) state[t.dataset.set] = t.dataset.set === "floors" ? Math.max(1, Math.round(v)) : v; }
   else if (t.dataset.override != null) { if (t.value) state.overrides[t.dataset.override] = t.value; else delete state.overrides[t.dataset.override]; }
   else return;
   sim = null; save(); render();
