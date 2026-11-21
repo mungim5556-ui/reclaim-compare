@@ -34,6 +34,8 @@
     "mounted_ground_floors": {"group": "구조체 해체", "label": "탑재 방식에서 지상 장비로 해체하는 하부 층수", "value": 2, "unit": "층", "source": "plan_nonhyeon", "date": "2026-11", "assumed": true, "ref": "논현동 124-1 계획서 p.69: 지상 2~1층(높이 6.6m)은 DX-320이 지상에서 해체. 장비 작업 높이에 따라 현장별로 입력."},
     "crane_per_day": {"group": "구조체 해체", "label": "이동식 크레인 하루 비용 (협소·진입 제한)", "value": 1000000, "unit": "원/일", "source": "assumed", "assumed": true, "min": 700000, "max": 1500000},
     "excavator_per_h": {"group": "구조체 해체", "label": "굴착기+압쇄기 시간당 비용 (공통 추정)", "value": 160391, "unit": "원/h", "source": "meeting", "date": "2026-11", "min": 145000, "max": 176000, "assumed": true, "ref": "공유 저장소의 공통 단가 160,391원/h를 적용. 소형 전용 단가는 압쇄기 포함 여부가 확인되면 별도로 사용 가능."},
+    "selective_equipment_per_h": {"group":"구조체 해체","assumed":true,"label":"분별 보조 장비 시간당 비용","value":82887,"unit":"원/h","source":"meeting","ref":"팀 조사 0.12㎥ 소형 굴착기 참고 단가. 운전원 포함. 현장 견적 우선."},
+    "selective_equipment_hours_per_day": {"group":"구조체 해체","assumed":true,"label":"분별 추가 작업일당 보조 장비 사용시간","value":1,"unit":"h/일","ref":"비용 비교용 가정. 분별 추가 공수를 작업조 인원으로 나눈 작업일마다 1시간을 적용. 실측값 확보 시 조정."},
     "hours_per_day": {"group": "구조체 해체", "label": "하루 작업 시간", "value": 8, "unit": "h/일", "source": "assumed", "assumed": true},
     "rebar_kg_per_m3": {"group": "구조체 해체", "label": "콘크리트 1㎥당 철근량", "value": 100, "unit": "kg/㎥", "source": "assumed", "assumed": true, "min": 70, "max": 140},
     "int_board_ratio": {"group": "분별 추가 품 (작업량 방식)", "label": "천장·벽 보드 면적 ÷ 연면적", "value": 1.5, "unit": "㎡/㎡", "source": "assumed", "assumed": true, "min": 0.8, "max": 2.5},
@@ -395,7 +397,7 @@
     "door": 0.025
   },
   "equipmentRef": {
-    "note": "참고용 시간당 비용 (원/h, 운전원 포함). 엔진은 대형 굴착기만 쓴다",
+    "note": "참고용 시간당 비용 (원/h, 운전원 포함). 분별 보조 장비 추정에는 0.12㎥ 소형 굴착기 단가를 사용한다",
     "대형 굴착기 1.5㎥": 160391,
     "소형 굴착기 0.12㎥": 82887,
     "타이어 크레인 25t": 137765,
