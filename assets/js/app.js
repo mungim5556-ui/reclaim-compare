@@ -1,7 +1,7 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, concreteGradeLink, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=ifc-grade-link-1";
+import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, concreteGradeLink, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=ifc-factory-scope-1";
 import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
-import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js?v=ifc-grade-link-1";
+import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js?v=ifc-factory-scope-1";
 import { classify, quantitiesFromElements, connectFinishTakeoff, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js?v=ifc-finish-flow-1";
 import { stackedBars, tornadoChart, histChart, legend, mil, num } from "./charts.js";
 
@@ -75,7 +75,15 @@ const save = () => {
 
 // Exact uploads from the plan validation set. Partial scopes require a scoped IFC.
 const uploadedPlanScopes = {
-  db1384a717b94437e38e4d544447fc94f7dd76d0835ea30d19ba6d3e6aba3073: { area: 23191.57, usage: "비주거 철골", finishFallbackDisabled: true },
+  db1384a717b94437e38e4d544447fc94f7dd76d0835ea30d19ba6d3e6aba3073: { area: 23191.57, usage: "비주거 철골", finishFallbackDisabled: true,
+    planReference: {
+      wasteTons: { concrete: 25000, mixed: 100, wood: 150, resin: 10 },
+      wasteScope: "주1동·부속동 포함 범위 미확인",
+      wastePage: 17,
+      asbestosArea: { roof: 26752, ceiling: 18750 },
+      asbestosPage: 147,
+    },
+  },
   "5082779404a13f81a1a1cf5a12d0bdb8074e2e43adcdeb8155cbb31a75f6f8a8": { area: 965.04, scope: "above", equipment: "mounted", site: "tight" },
   "1018a28b042f0d3f92c5c9c4e3ca688c7f3dfd68f9d639c000a72c3ea5d2ce16": { partialArea: 350 },
   e3f77ea809a0dcb4b5fe738638fbdf54919a8eb00e14718f1213d7a8d9bdb513: { partialArea: 266.08 },
@@ -226,10 +234,11 @@ function derive() {
     || (q.structure === "unknown" && "현장 조건에서 계획서의 구조형식을 확인하세요.")
     || (q.equipment === "mixed" && (!(q.smallHours > 0 && q.largeHours > 0) || q.smallPrice == null || q.largePrice == null || (q.concurrentHours ?? 0) > Math.min(q.smallHours, q.largeHours)) && "두 굴착기의 가동시간과 시간당 단가를 입력하세요. 동시 작업시간은 짧은 쪽 가동시간 이하여야 합니다.");
   const cmp = openSteelFrame || comparisonLimit ? null : compare(q, state.p);
+  const planReference = state.source === "ifc" ? state.uploadedPlanScope?.planReference : undefined;
   const finishUnverified = Object.values(q.finishTakeoff ?? {}).some(item => item.unverified);
   const recommended = !cmp || cmp.unpricedCuts.length || finishUnverified
     ? null : cmp.delta === 0 ? "tie" : cmp.delta < 0 ? "selective" : "crush";
-  return { classified, q, openSteelFrame, comparisonLimit, cmp, recommended, frameAdjustments, finishUnverified };
+  return { classified, q, openSteelFrame, comparisonLimit, cmp, recommended, frameAdjustments, finishUnverified, planReference };
 }
 
 /* ---------------- 모델 ---------------- */
@@ -596,7 +605,7 @@ function concreteGradeLabel(q, p, selective) {
 function concreteGradeBasis(q, p) {
   if (q.concreteCase !== "linked") return "고정 성상 가정";
   const link = concreteGradeLink(q, p);
-  if (link.status === "missing-finish") return "마감 물량 미확인 · 기존 고정 성상 가정 적용";
+  if (link.status === "missing-finish") return "마감 물량 미확인 · 추가 성상 개선 미반영";
   if (link.status === "no-concrete") return "적용할 폐콘크리트 물량 없음";
   return `04 아파트 보정 모델 · 현장 자료 미검증 · 추가 선철거 ${num(link.extraTons, 2)}t · 기준 대비 개선 ${num(link.factor * 100, 1)}%`;
 }
@@ -844,6 +853,8 @@ function compareTab(d) {
       ${planExampleNotice()}
       ${q.windowMode === "both" ? `<p class="caption muted">${WINDOW_ASSUMPTION}</p>` : ""}
       <p class="verdict">${d.finishUnverified ? "마감재 미산정 · 포함 항목 기준 · " : ""}${steel.excluded ? "철골 절단·인양비 제외 기준 · " : ""}${unpricedCuts.length ? `절단·인양 견적 미입력 · 확인된 비용 차이 (분별 − 압쇄) ${mil(delta, 2)}백만원` : equality ? "두 공법의 순비용이 같습니다." : `<strong>${better}</strong>의 순비용이 ${mil(Math.abs(delta))}백만원 저렴합니다.`}</p>
+      ${d.planReference ? `<p class="caption muted">포함 항목 기준 · 바닥 슬래브 해체 공기·장비비 미포함 · 석면 해체비 별도 (지붕 슬레이트 ${num(d.planReference.asbestosArea.roof)}㎡ · 천장 약 ${num(d.planReference.asbestosArea.ceiling)}㎡, 계획서 p.${d.planReference.asbestosPage})</p>
+      <p class="caption muted">계획서 폐기물량 참고 (p.${d.planReference.wastePage}) · ${Object.entries(d.planReference.wasteTons).map(([key, tons]) => `${STREAM_LABEL[key]} ${num(tons)}t`).join(" · ")} · ${esc(d.planReference.wasteScope)}로 처리비 미반영. 처리비는 IFC 물량 기준입니다.</p>` : ""}
       <p class="caption muted">공수 기준 ${q.labor === "quantity" ? "자재별 작업량" : "논문의 면적당 차이 품"} · 폐콘크리트 성상 압쇄 ${concreteGradeLabel(q, p, false)}% · 분별 ${concreteGradeLabel(q, p, true)}% · ${concreteGradeBasis(q, p)}${q.transportCrush == null || q.transportSel == null ? " · 운반비 비교 미반영" : ""}</p>
       <details id="finish-settlement"><summary>현장 중량·처리 견적</summary>
         <div class="form-grid">
@@ -1050,6 +1061,7 @@ function summary(d) {
       crush: concreteGrades(state.p, false, d.q.concreteCase, d.q).map(grade => grade.share),
       selective: concreteGrades(state.p, true, d.q.concreteCase, d.q).map(grade => grade.share),
     },
+    ...(d.planReference ? { plan_waste_reference: { ...d.planReference, disposalApplied: false, slabScheduleAndEquipmentIncluded: false, asbestosCostIncluded: false } } : {}),
     finish_takeoff: d.q.finishTakeoff ?? null,
     finish_mixed_reallocated_t: d.q.finishMixedReallocated ?? null,
     finish_routes: { crush: crush.finishRoutes, selective: selective.finishRoutes },

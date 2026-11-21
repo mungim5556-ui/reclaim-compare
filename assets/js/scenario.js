@@ -138,7 +138,7 @@ export function concreteGrades(p, selective, concreteCase = DEFAULT_CONCRETE_CAS
   const baseline = CONCRETE_CASES.same.shares;
   const link = selective && concreteCase === "linked" && q ? concreteGradeLink(q, p) : null;
   const shares = link
-    ? baseline.map((share, i) => share + (CONCRETE_CASES.good.shares[i] - share) * (link.factor ?? (link.status === "no-concrete" ? 0 : 1)))
+    ? baseline.map((share, i) => share + (CONCRETE_CASES.good.shares[i] - share) * (link.factor ?? 0))
     : (selective ? CONCRETE_CASES[concreteCase]?.shares ?? baseline : baseline);
   return [
     { name: "순수 폐콘크리트", share: shares[0], fee: p.fee_pure_concrete },

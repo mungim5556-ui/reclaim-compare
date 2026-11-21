@@ -56,8 +56,8 @@ test("scaling finish and concrete equally keeps grades", () => {
   assert.deepEqual(shares(q), shares({ ...q, t: Object.fromEntries(Object.entries(q.t).map(([key, tons]) => [key, tons * 2])) }));
 });
 
-test("missing finish data uses the labeled project fallback", () => {
+test("missing finish data does not credit selective grade improvement", () => {
   const q = { ...model, finishTakeoff: { board: { unverified: true }, tile: {} } };
   assert.equal(concreteGradeLink(q, p).status, "missing-finish");
-  assert.deepEqual(shares(q), [80, 18, 2]);
+  assert.deepEqual(shares(q), shares(q, false));
 });
