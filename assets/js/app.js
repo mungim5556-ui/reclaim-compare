@@ -1,5 +1,5 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, DEFAULT_CONCRETE_CASE, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=equipment-auto-1";
+import { selectiveEquipmentHoursPerDay, costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, CONCRETE_CASES, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js?v=equipment-auto-1";
 import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
 import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
 import { classify, quantitiesFromElements, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js";
@@ -104,7 +104,7 @@ function projectInputs() {
       volume: state["rcCutVolume" + suffix], cost: state["rcCutCost" + suffix], days: state["rcCutDays" + suffix],
     }])),
     cleanCrush: state.cleanCrush, cleanSel: state.cleanSel, cleanPrice: state.cleanPrice, cableCrush: state.cableCrush, cableSel: state.cableSel, cablePrice: state.cablePrice, cableCommon: state.cableCommon, copperPipeSold: state.copperPipeSold, pipeInstalled: state.pipeInstalled, cableInstalled: state.cableInstalled, ...Object.fromEntries([...frameFields, ...disposalFields, "glassPdPerM2", "mountedBucket", "mountedLarge"].map(key => [key, state[key]])), carpenterShare: state.carpenterShare,
-    generalFinishPd: state.generalFinishPd, concreteCase: DEFAULT_CONCRETE_CASE, caseId: state.caseId || state.plan?.source?.validation_id,
+    generalFinishPd: state.generalFinishPd, concreteCase: "good", caseId: state.caseId || state.plan?.source?.validation_id,
   };
 }
 
@@ -525,17 +525,25 @@ function openSteelNotice(d) {
   const { openSteelCrushQuote: crush, openSteelSelectiveQuote: selective, openSteelCrushDays: crushDays, openSteelSelectiveDays: selectiveDays } = state;
   const ready = crush != null && selective != null;
   const delta = ready ? selective - crush : null;
-  const { disposal, revenue, rows } = costScenario({ ...d.q, concreteCase: "same" }, state.p, "crush");
-  const materialRows = rows.filter(row => row.group === "처리비" || row.group === "매각수익");
+  const p = state.p;
+  const crushMaterials = costScenario(d.q, p, "crush").rows.filter(row => row.group === "처리비" || row.group === "매각수익");
+  const concreteNames = new Set([...concreteGrades(p, false, d.q.concreteCase).map(grade => grade.name), "별도 반입 콘크리트 (현장 견적)"]);
+  const selectiveConcrete = costScenario(d.q, p, "selective").rows.filter(row => row.group === "처리비" && concreteNames.has(row.item));
+  const selectiveMaterials = [...crushMaterials.filter(row => row.group !== "처리비" || !concreteNames.has(row.item)), ...selectiveConcrete];
+  const byItem = rows => new Map(rows.map(row => [row.item, row]));
+  const crushRows = byItem(crushMaterials), selectiveRows = byItem(selectiveMaterials);
+  const names = new Set([...crushRows.keys(), ...selectiveRows.keys()]);
   const amountCell = value => '<td class="r">' + num(value) + '원</td>';
+  const materialCell = row => row ? '<td class="r">' + num(row.qty, 2) + ' ' + row.unit + ' · ' + num(row.amount) + '원</td>' : '<td class="r">–</td>';
+  const net = rows => rows.reduce((sum, row) => sum + row.amount, 0);
   return `<section class="card"><h2>개방형 철골 · IFC 비용 비교</h2>
     <p>${esc(state.fileName)} · IFC 강재 ${num(d.q.t.metal, 2)}t · 콘크리트 ${num(d.q.t.concrete, 2)}t · 합성수지 ${num(d.q.t.resin, 2)}t</p>
     ${d.q.panelWeightMissing ? '<p class="caption muted">부속 샌드위치패널 중량 미확인 · 견적에 철거와 처리 범위를 확인하세요.</p>' : ""}
-    <p class="verdict">IFC 물량으로 계산한 처리비와 매각수익은 두 공법이 같은 조건입니다.</p>
-    <p class="caption muted">기초 콘크리트의 반입 성상과 구조용 철골 회수율은 공통으로 적용합니다. 고철 수익에는 기초 콘크리트에서 추정한 철근 회수분도 포함합니다. 철골 절단·인양비, 현장 인건비와 운반비는 아래 현장 순견적에 포함해 비교할 수 있습니다.</p>
+    <p class="verdict">IFC 물량 기준으로 폐콘크리트 처리비와 매각수익을 비교합니다.</p>
+    <p class="caption muted">폐콘크리트 성상은 압쇄 66 / 26 / 8%, 분별 80 / 18 / 2%를 적용합니다. 구조용 철골 회수율은 공통입니다. 고철 수익에는 기초 콘크리트에서 추정한 철근 회수분도 포함합니다. 철골 절단·인양비, 현장 인건비와 운반비는 아래 현장 순견적에 포함해 비교할 수 있습니다.</p>
     <div class="table-wrap"><table class="tbl"><thead><tr><th>IFC 물량 기준</th><th class="r">일반해체</th><th class="r">분별해체</th></tr></thead><tbody>
-    ${materialRows.map(row => "<tr><td>" + esc(row.item) + " · " + num(row.qty, 2) + " " + row.unit + "</td>" + amountCell(row.amount) + amountCell(row.amount) + "</tr>").join("")}
-    </tbody><tfoot><tr><td>처리비 − 매각수익</td>${amountCell(disposal - revenue)}${amountCell(disposal - revenue)}</tr></tfoot></table></div>
+    ${[...names].map(name => "<tr><td>" + esc(name) + "</td>" + materialCell(crushRows.get(name)) + materialCell(selectiveRows.get(name)) + "</tr>").join("")}
+    </tbody><tfoot><tr><td>처리비 − 매각수익</td>${amountCell(net(crushMaterials))}${amountCell(net(selectiveMaterials))}</tr></tfoot></table></div>
     <details ${crush != null || selective != null || crushDays != null || selectiveDays != null ? "open" : ""}><summary>현장 순견적과 작업일 비교</summary>
     <p>철골 절단·인양, 마감재 철거, 반출·처리까지 같은 범위의 총견적에서 고철 매각대금을 뺀 금액을 입력하세요.</p>
     <div class="form-grid">
@@ -787,7 +795,7 @@ function compareTab(d) {
       ${planExampleNotice()}
       ${q.windowMode === "both" ? `<p class="caption muted">${WINDOW_ASSUMPTION}</p>` : ""}
       <p class="verdict">${steel.excluded ? "철골 절단·인양비 제외 기준 · " : ""}${unpricedCuts.length ? `절단·인양 견적 미입력 · 확인된 비용 차이 (분별 − 압쇄) ${mil(delta, 2)}백만원` : equality ? "두 공법의 순비용이 같습니다." : `<strong>${better}</strong>의 순비용이 ${mil(Math.abs(delta))}백만원 저렴합니다.`}</p>
-      <p class="caption muted">공수 기준 ${q.labor === "quantity" ? "자재별 작업량" : "논문의 면적당 차이 품"} · 폐콘크리트 성상 양쪽 동일 (66 / 26 / 8%)${q.transportCrush == null || q.transportSel == null ? " · 운반비 비교 미반영" : ""}</p>
+      <p class="caption muted">공수 기준 ${q.labor === "quantity" ? "자재별 작업량" : "논문의 면적당 차이 품"} · 폐콘크리트 성상 압쇄 66 / 26 / 8% · 분별 80 / 18 / 2%${q.transportCrush == null || q.transportSel == null ? " · 운반비 비교 미반영" : ""}</p>
       <details id="finish-settlement"><summary>현장 중량·처리 견적</summary>
         <div class="form-grid">
         ${[["board","보드"],["tile","타일"]].map(([key,label]) => `<fieldset><legend>${label} · 현재 ${num(q.t[key],2)}t</legend>
@@ -821,9 +829,9 @@ function compareTab(d) {
       <p class="caption muted">분별 절감액 ${mil(crush.mixed.tons * crush.mixed.fee - selective.mixed.tons * selective.mixed.fee, 2)}백만원 · 물량 효과 ${mil((crush.mixed.tons - selective.mixed.tons) * crush.mixed.fee, 2)}백만원 · 단가 효과 ${mil(selective.mixed.tons * (crush.mixed.fee - selective.mixed.fee), 2)}백만원</p>
     </section>
     <section class="card"><h2>산정 기준</h2>
-      <details><summary>분별 후 콘크리트가 더 깨끗해지면?</summary>
+      <details><summary>폐콘크리트 성상 가정을 바꾸면?</summary>
         <p class="caption muted">분별안의 성상만 바꿔 계산한 가정입니다. 비용 차이의 기준은 분별 − 압쇄입니다.</p>
-        <ul>${["standard", "good"].map(key => {
+        <ul>${["same", "standard"].map(key => {
           const alternative = compare({ ...q, concreteCase: key }, p);
           const shares = CONCRETE_CASES[key].shares.map(value => num(value * 100)).join(" / ");
           return `<li>분별 ${shares}% · 비용 차이 ${mil(alternative.delta, 2)}백만원</li>`;
