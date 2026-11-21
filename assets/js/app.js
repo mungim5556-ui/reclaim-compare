@@ -1,5 +1,5 @@
 // 화면과 상태. 계산은 scenario.js / sensitivity.js / classify.js가 한다.
-import { concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js";
+import { costScenario, concreteCut, officeSalvage, steelDismantling, compare, paramValues, quantitiesFromArea, paperMode, schedule, STREAMS, STREAM_LABEL, SEPARATED, SITES, LABOR_METHODS, EQUIPMENT, equipmentMode, selExtra, concreteGrades, streamTons, PRESS_FINISH_BASELINE } from "./scenario.js";
 import { VALIDATION_SCHEMA, MIN_CASES, SCOPES, PERIOD_UNITS, BENCHMARKS, validationCases, comparableCases, calibrateStructure, benchmark } from "./calibration.js";
 import { variables, tornado, breakEven, simulate, histogram } from "./sensitivity.js";
 import { classify, quantitiesFromElements, supplement, checkAgainstUnits, elementResults, isStructuralSteelPart, reconcileElementResults, toCsv, groupKey, CATEGORY_LABEL, isOpenSteelFrame } from "./classify.js";
@@ -523,10 +523,19 @@ function openSteelNotice(d) {
   const { openSteelCrushQuote: crush, openSteelSelectiveQuote: selective, openSteelCrushDays: crushDays, openSteelSelectiveDays: selectiveDays } = state;
   const ready = crush != null && selective != null;
   const delta = ready ? selective - crush : null;
-  return `<section class="card"><h2>개방형 철골 · 현장 견적 비교</h2>
+  const { disposal, revenue, rows } = costScenario({ ...d.q, concreteCase: "same" }, state.p, "crush");
+  const materialRows = rows.filter(row => row.group === "처리비" || row.group === "매각수익");
+  const amountCell = value => '<td class="r">' + num(value) + '원</td>';
+  return `<section class="card"><h2>개방형 철골 · IFC 비용 비교</h2>
     <p>${esc(state.fileName)} · IFC 강재 ${num(d.q.t.metal, 2)}t · 콘크리트 ${num(d.q.t.concrete, 2)}t · 합성수지 ${num(d.q.t.resin, 2)}t</p>
     ${d.q.panelWeightMissing ? '<p class="caption muted">부속 샌드위치패널 중량 미확인 · 견적에 철거와 처리 범위를 확인하세요.</p>' : ""}
-    <p>철골 절단·인양, 마감재 철거, 반출·처리까지 같은 범위로 받은 총견적을 넣으세요. 고철 매각대금을 받을 경우 매각대금을 뺀 순견적을 입력하세요.</p>
+    <p class="verdict">IFC 물량으로 계산한 처리비와 매각수익은 두 공법이 같은 조건입니다.</p>
+    <p class="caption muted">기초 콘크리트의 반입 성상과 구조용 철골 회수율은 공통으로 적용합니다. 고철 수익에는 기초 콘크리트에서 추정한 철근 회수분도 포함합니다. 철골 절단·인양비, 현장 인건비와 운반비는 아래 현장 순견적에 포함해 비교할 수 있습니다.</p>
+    <div class="table-wrap"><table class="tbl"><thead><tr><th>IFC 물량 기준</th><th class="r">일반해체</th><th class="r">분별해체</th></tr></thead><tbody>
+    ${materialRows.map(row => "<tr><td>" + esc(row.item) + " · " + num(row.qty, 2) + " " + row.unit + "</td>" + amountCell(row.amount) + amountCell(row.amount) + "</tr>").join("")}
+    </tbody><tfoot><tr><td>처리비 − 매각수익</td>${amountCell(disposal - revenue)}${amountCell(disposal - revenue)}</tr></tfoot></table></div>
+    <details ${crush != null || selective != null || crushDays != null || selectiveDays != null ? "open" : ""}><summary>현장 순견적과 작업일 비교</summary>
+    <p>철골 절단·인양, 마감재 철거, 반출·처리까지 같은 범위의 총견적에서 고철 매각대금을 뺀 금액을 입력하세요.</p>
     <div class="form-grid">
       ${numeric("openSteelCrushQuote", "일반해체 순견적 (원)")}
       ${numeric("openSteelSelectiveQuote", "분별해체 순견적 (원)")}
@@ -538,7 +547,8 @@ function openSteelNotice(d) {
       <div class="table-wrap"><table class="tbl"><thead><tr><th>항목</th><th class="r">일반해체</th><th class="r">분별해체</th></tr></thead><tbody>
       <tr><td>순견적</td><td class="r">${num(crush)}원</td><td class="r">${num(selective)}원</td></tr>
       <tr><td>예정 작업일수</td><td class="r">${crushDays == null ? "미입력" : num(crushDays, 1) + "일"}</td><td class="r">${selectiveDays == null ? "미입력" : num(selectiveDays, 1) + "일"}</td></tr>
-      </tbody></table></div>` : '<p class="caption muted">순견적을 두 건 입력하면 비용 차이가 표시됩니다.</p>'}
+      </tbody></table></div>` : '<p class="caption muted">두 순견적을 입력하면 전체 공사비 차이가 표시됩니다.</p>'}
+    </details>
     <button class="btn btn-outline" data-tab="model">IFC 물량 보기</button></section>`;
 }
 
