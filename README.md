@@ -84,11 +84,22 @@ assets/data/paper2023_case.json   논문 사례 (검증 정답지)
 assets/data/sample.ifc      예시 모델 (scripts/make_sample_ifc.mjs 로 생성)
 assets/js/scenario.js       두 안의 비용 엔진, 논문 재현
 assets/js/sensitivity.js    손익분기, 토네이도, 몬테카를로
+assets/js/pipeline.js       계산 흐름 (입력값 → 분류 → 물량 → 비교 결과). 화면과 서버가 같이 쓴다
 assets/js/ifc.js            IFC 읽기 (web-ifc)
 assets/js/classify.js       부재 → 폐기물 성상·톤수, 부재별 결과 CSV
 assets/js/viewer3d.js, charts.js, app.js
 revit/                      공유 매개변수 파일, pyRevit 되쓰기 스크립트
 ```
+
+## 계산 흐름 모듈 (`assets/js/pipeline.js`)
+
+화면(`app.js`)의 계산은 모두 `pipeline.js`의 `derive(state, { rates, defaults })`가 합니다. DOM·fetch·localStorage를 쓰지 않아, 브라우저 밖(서버·Node)에서도 화면과 같은 결과를 냅니다.
+
+- **계산 방식을 바꿀 때는 `pipeline.js`(와 scenario.js·classify.js 등 엔진 모듈)를 고치세요.** `app.js`는 화면과 입력값만 다룹니다.
+- 서버·일괄 처리용 입구:
+  - `computeModel(model, inputs, { rates, defaults, p })`: IFC를 화면에 처음 올렸을 때와 같은 기본 조건으로 계산합니다. `model`은 `ifc.js parseIfc()`와 같은 모양이고, `inputs`로 용도·면적·범위 같은 화면 입력값을 덮어쓸 수 있습니다. 반환값은 `{ cmp, q, classified, state, elementRows, comparisonLimit, ... }`입니다.
+  - `computeQuantities(bundle, { rates, defaults })`: 물량 묶음 `{ schema: "reclaim-quantities/1", model, inputs?, p? }`을 계산합니다.
+- [nijja](https://github.com/mungim5556-ui/nijja)는 이 모듈로 Revit이 올린 물량을 서버(Cloudflare Worker)에서 계산합니다. 그래서 공법 비교 화면과 Revit 결과가 같은 엔진에서 나옵니다.
 
 ## 알려진 한계
 
